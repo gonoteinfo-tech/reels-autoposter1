@@ -2,6 +2,9 @@
 
 # dependencies
 /node_modules
+
+# data (database, downloads, processed videos)
+/data/
 /.pnp
 .pnp.*
 .yarn/*

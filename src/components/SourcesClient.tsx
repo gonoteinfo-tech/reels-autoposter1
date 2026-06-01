@@ -12,6 +12,7 @@ import {
   X,
   AtSign,
   RefreshCw,
+  Menu,
 } from "lucide-react";
 import { Instagram, Facebook, TikTok, YouTube } from "@/components/icons";
 
@@ -20,6 +21,7 @@ import type { SourceProfile, User } from "@/types";
 
 export default function SourcesClient({ user }: { user: User }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [sources, setSources] = useState<SourceProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -122,12 +124,21 @@ export default function SourcesClient({ user }: { user: User }) {
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((v) => !v)}
         user={user}
+        mobileOpen={mobileOpen}
+        onMobileClose={() => setMobileOpen(false)}
       />
 
       <main className={`main-area relative z-10 ${sidebarCollapsed ? "collapsed" : ""}`}>
         {/* TopBar */}
         <div className="topbar">
           <div className="flex items-center gap-3">
+            <button
+              className="mobile-menu-btn"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Abrir menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             <Users className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
             <h2 className="text-lg font-bold text-white">Fontes de Conteúdo</h2>
             <span className="badge badge-neutral">{sources.length}</span>

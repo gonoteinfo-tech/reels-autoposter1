@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Filter,
   Search,
+  Menu,
 } from "lucide-react";
 import { Instagram, Facebook } from "@/components/icons";
 
@@ -34,6 +35,7 @@ const STAGE_FILTERS: { value: string; label: string }[] = [
 
 export default function DashboardClient({ user }: { user: User }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [reels, setReels] = useState<Reel[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
@@ -187,6 +189,8 @@ export default function DashboardClient({ user }: { user: User }) {
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((v) => !v)}
         user={user}
+        mobileOpen={mobileOpen}
+        onMobileClose={() => setMobileOpen(false)}
       />
 
       {/* Main Area */}
@@ -194,6 +198,13 @@ export default function DashboardClient({ user }: { user: User }) {
         {/* TopBar */}
         <div className="topbar">
           <div className="flex items-center gap-3">
+            <button
+              className="mobile-menu-btn"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Abrir menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             <h2 className="text-lg font-bold text-white">Dashboard</h2>
             {schedulerStatus && (
               <div className="flex items-center gap-1.5">

@@ -15,6 +15,7 @@ import {
   Monitor,
   Link2,
   Unlink,
+  Menu,
 } from "lucide-react";
 import { Instagram, Facebook } from "@/components/icons";
 
@@ -56,6 +57,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 export default function SettingsClient({ user }: { user: User }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -243,11 +245,20 @@ export default function SettingsClient({ user }: { user: User }) {
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((v) => !v)}
         user={user}
+        mobileOpen={mobileOpen}
+        onMobileClose={() => setMobileOpen(false)}
       />
 
       <main className={`main-area relative z-10 ${sidebarCollapsed ? "collapsed" : ""}`}>
         <div className="topbar">
           <div className="flex items-center gap-3">
+            <button
+              className="mobile-menu-btn"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Abrir menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             <Settings className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
             <h2 className="text-lg font-bold text-white">Configurações</h2>
           </div>
