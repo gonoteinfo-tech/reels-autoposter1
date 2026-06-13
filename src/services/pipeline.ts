@@ -15,7 +15,8 @@ import {
   getAllUsers,
   getUserById,
 } from './database';
-import { discoverReels, downloadReel, extractVideoId } from './instagram-downloader';
+import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, randomSleep } from './instagram-downloader';
+import { discoverReelsApify, isApifyConfigured } from './apify-discoverer';
 import { addLogoToVideo } from './video-processor';
 import { uploadVideo, generateR2Key } from './storage';
 import { publishReel as publishToInstagram } from './instagram-publisher';
@@ -103,7 +104,22 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
     const downloadResult = await measureStage(reelId, 'downloading', async () => {
       updateReelStage(reelId, 'downloading');
 
-      const { filePath, metadata } = await downloadReel(reel!.instagram_url, DOWNLOADS_DIR);
+      let filePath: string;
+      let metadata: { title?: string; description?: string; duration?: number };
+
+      // Se o reel tem direct_video_url (fornecida pela Apify), usar download direto
+      const directUrl = (reel as any).direct_video_url as string | undefined;
+
+      if (directUrl) {
+        console.log(`📥 Reel #${reelId}: usando URL direta da Apify (sem cookies)`);
+        filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reel!.instagram_id || String(reelId));
+        metadata = { title: '', description: reel!.caption || '', duration: 0 };
+      } else {
+        // Fallback: yt-dlp com cookies (TikTok, YouTube, Facebook ou Instagram sem Apify)
+        const result = await downloadReel(reel!.instagram_url, DOWNLOADS_DIR);
+        filePath = result.filePath;
+        metadata = result.metadata;
+      }
 
       const originalCaption = metadata.description || metadata.title || '';
       
@@ -121,7 +137,7 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
         stage: 'downloaded',
       });
 
-      return `Download concluído: ${path.basename(filePath)} (${metadata.duration}s)`;
+      return `Download concluído: ${path.basename(filePath)} (${metadata.duration || 0}s)`;
     });
 
     results.push(downloadResult);
@@ -328,7 +344,7 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
           const lastCheckedTime = new Date(lastCheckedISO).getTime();
           const diffMinutes = (Date.now() - lastCheckedTime) / (1000 * 60);
           if (diffMinutes < 30) {
-            console.log(`📥 [Usuário #${user.id}] @${source.username}: Descoberta automática pulada (última verificação há ${diffMinutes.toFixed(1)} min)`);
+            console.log(`📥 [Usuário #${user.id}] @${source.username}: Descoberta automática pulada (last check há ${diffMinutes.toFixed(1)} min)`);
             continue;
           }
         } catch (err) {
@@ -336,9 +352,53 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
         }
       }
 
+      const platform = (source as any).platform || 'instagram';
+
       try {
-        const platform = (source as any).platform || 'instagram';
         console.log(`📥 [Usuário #${user.id}] Descobrindo de ${platform}: @${source.username}...`);
+
+        // ── Instagram: usar Apify se configurado (sem cookies, sem bloqueio de VPS) ──
+        if (platform === 'instagram' && isApifyConfigured()) {
+          console.log(`🤖 [Apify] Usando Apify para descoberta de @${source.username}`);
+
+          const apifyReels = await discoverReelsApify(source.username, 10);
+          let newCount = 0;
+
+          for (const apifyReel of apifyReels) {
+            const reelUrl = apifyReel.url;
+            const existing = getReelByUrl(reelUrl, user.id);
+            if (existing) continue;
+
+            // Criar registro no banco com a URL direta do vídeo embutida no campo caption
+            // (usada pelo pipeline de download para evitar cookies)
+            createReel({
+              source_id: source.id,
+              source_username: source.username,
+              instagram_url: reelUrl,
+              instagram_id: apifyReel.id,
+              // A legenda já vem da Apify — não precisa de AI rewrite se estiver preenchida
+              caption: apifyReel.caption || '',
+              hashtags: apifyReel.hashtags.join(' '),
+              user_id: user.id,
+              // Campo extra para o pipeline de download usar URL direta
+              direct_video_url: apifyReel.videoUrl,
+            });
+
+            newCount++;
+            totalDiscovered++;
+          }
+
+          updateSourceLastChecked(source.id);
+          console.log(`🤖 [Apify] @${source.username}: ${newCount} novos reels descobertos`);
+
+          // Jitter entre perfis para parecer comportamento humano
+          if (activeSources.indexOf(source) < activeSources.length - 1) {
+            await randomSleep(2000, 8000);
+          }
+          continue; // Próximo source
+        }
+
+        // ── Outras plataformas (TikTok, YouTube, Facebook) ou Instagram sem Apify ──
         const urls = await discoverReels(source.username, platform, 10);
 
         let newCount = 0;

@@ -253,6 +253,7 @@ export function initDatabase(): void {
           local_path TEXT,
           processed_path TEXT,
           r2_url TEXT,
+          direct_video_url TEXT,
           stage TEXT NOT NULL DEFAULT 'discovered',
           error_message TEXT,
           ig_post_id TEXT,
@@ -268,6 +269,13 @@ export function initDatabase(): void {
         DROP TABLE reels_old;
       `);
       console.log('💾 Migração de reels concluída com sucesso!');
+    } else {
+      // Verificar e adicionar coluna direct_video_url se não existir
+      const hasDirectVideoUrl = reelsColumns.some(c => c.name === 'direct_video_url');
+      if (!hasDirectVideoUrl) {
+        database.exec("ALTER TABLE reels ADD COLUMN direct_video_url TEXT");
+        console.log('💾 Campo direct_video_url adicionado à tabela reels (Apify integration)');
+      }
     }
   }
 
@@ -702,11 +710,13 @@ export function createReel(data: {
   original_caption?: string;
   hashtags?: string;
   user_id: number;
+  /** URL direta do vídeo fornecida pela Apify (evita cookies/scraping no download) */
+  direct_video_url?: string;
 }): Reel {
   const database = getDb();
   const result = database.prepare(`
-    INSERT INTO reels (source_id, source_username, instagram_url, instagram_id, caption, original_caption, hashtags, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO reels (source_id, source_username, instagram_url, instagram_id, caption, original_caption, hashtags, user_id, direct_video_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.source_id,
     data.source_username,
@@ -715,7 +725,8 @@ export function createReel(data: {
     data.caption || '',
     data.original_caption || '',
     data.hashtags || '',
-    data.user_id
+    data.user_id,
+    data.direct_video_url || null
   );
 
   console.log(`💾 Reel criado: ${data.instagram_url} para Usuário ${data.user_id} (ID: ${result.lastInsertRowid})`);

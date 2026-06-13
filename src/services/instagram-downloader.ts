@@ -174,6 +174,83 @@ function getCookiesArgs(): string[] {
 }
 
 /**
+ * Aguarda um tempo aleatório entre minMs e maxMs milissegundos.
+ * Usado para evitar detecção de automação por padrões de acesso fixos.
+ */
+export async function randomSleep(minMs: number = 3000, maxMs: number = 12000): Promise<void> {
+  const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  console.log(`⏳ Aguardando ${(delay / 1000).toFixed(1)}s (anti-detecção)...`);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+/**
+ * Baixa um vídeo a partir de uma URL direta (CDN) usando yt-dlp — sem precisar de cookies.
+ * Usado quando a Apify já forneceu a URL direta do vídeo.
+ *
+ * @param directVideoUrl URL direta do vídeo (ex: CDN do Instagram)
+ * @param outputDir Diretório onde salvar o arquivo
+ * @param reelId ID único do reel (para nomear o arquivo)
+ * @returns Caminho do arquivo baixado
+ */
+export async function downloadFromDirectUrl(
+  directVideoUrl: string,
+  outputDir: string,
+  reelId: string
+): Promise<string> {
+  console.log(`📥 [Direct URL] Baixando vídeo: ${directVideoUrl.substring(0, 80)}...`);
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const ytdlp = await findYtDlp();
+  const safeId = reelId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const outputTemplate = path.join(outputDir, `${safeId}.%(ext)s`);
+
+  const args = [
+    '--no-check-certificates',
+    '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+    '--merge-output-format', 'mp4',
+    '--output', outputTemplate,
+    '--no-playlist',
+    '--no-overwrites',
+    '--retries', '3',
+    // Sem cookies — URL direta do CDN não precisa de autenticação
+    directVideoUrl,
+  ];
+
+  try {
+    await execFileAsync(ytdlp, args, {
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 300000,
+    });
+
+    // Verificar se o arquivo foi gerado
+    const expectedFile = path.join(outputDir, `${safeId}.mp4`);
+    if (fs.existsSync(expectedFile)) {
+      const stats = fs.statSync(expectedFile);
+      console.log(`📥 [Direct URL] Download concluído: ${expectedFile} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+      return expectedFile;
+    }
+
+    // Buscar qualquer mp4 recente no diretório
+    const files = fs.readdirSync(outputDir)
+      .filter((f) => f.startsWith(safeId) && f.endsWith('.mp4'))
+      .map((f) => ({ name: f, time: fs.statSync(path.join(outputDir, f)).mtimeMs }))
+      .sort((a, b) => b.time - a.time);
+
+    if (files.length > 0) {
+      return path.join(outputDir, files[0].name);
+    }
+
+    throw new Error('Arquivo mp4 não encontrado após download por URL direta');
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(`❌ Falha no download por URL direta: ${msg}`);
+  }
+}
+
+/**
  * Baixa um Reel do Instagram via yt-dlp.
  * @param url URL do reel no Instagram
  * @param outputDir Diretório onde salvar o arquivo
