@@ -148,3 +148,99 @@ export async function testApifyConnection(): Promise<{ ok: boolean; user?: strin
     return { ok: false, error: `Erro de conexão: ${msg}` };
   }
 }
+
+/**
+ * Obtém a URL direta do vídeo de um reel específico usando a Apify.
+ * Usado quando um reel foi adicionado manualmente por URL (sem passar pela descoberta de perfil).
+ *
+ * @param reelUrl URL do reel do Instagram (ex: https://www.instagram.com/reel/ABC123/)
+ * @returns URL direta do vídeo ou null se não encontrada
+ */
+export async function fetchSingleReelApify(
+  reelUrl: string
+): Promise<ApifyReelInfo | null> {
+  if (!isApifyConfigured()) {
+    return null;
+  }
+
+  // Normalizar a URL — remover parâmetros de rastreamento (?igsh=...)
+  let cleanUrl = reelUrl;
+  try {
+    const urlObj = new URL(reelUrl);
+    // Manter apenas o caminho, sem query string
+    cleanUrl = `${urlObj.origin}${urlObj.pathname}`.replace(/\/$/, '') + '/';
+  } catch {
+    // Se falhar, usa a URL original
+  }
+
+  console.log(`🤖 [Apify] Buscando URL direta para reel: ${cleanUrl}`);
+
+  const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
+
+  // Usar o actor de post scraper — aceita URLs diretas de reels
+  const actorId = 'apify/instagram-post-scraper';
+
+  try {
+    const run = await client.actor(actorId).call(
+      {
+        directUrls: [cleanUrl],
+        resultsLimit: 1,
+      },
+      {
+        timeout: 120,
+        memory: 256,
+      }
+    );
+
+    if (!run || !run.defaultDatasetId) {
+      console.warn('⚠️ [Apify] Nenhum dataset retornado para o reel individual');
+      return null;
+    }
+
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+    if (!items || items.length === 0) {
+      console.warn(`⚠️ [Apify] Nenhum resultado para: ${cleanUrl}`);
+      return null;
+    }
+
+    const item = items[0] as Record<string, any>;
+
+    // Extrair URL do vídeo
+    const videoUrl =
+      item.videoUrl ||
+      item.video_url ||
+      item.videoPlaybackUrl ||
+      item.displayUrl ||
+      null;
+
+    if (!videoUrl) {
+      console.warn(`⚠️ [Apify] Item retornado sem videoUrl para: ${cleanUrl}`);
+      return null;
+    }
+
+    const reelId = item.shortCode || item.id || item.shortcode || '';
+    const captionText = item.caption || item.text || '';
+    const hashtagMatches = captionText.match(/#\w+/g) || [];
+
+    console.log(`🤖 [Apify] URL direta obtida para reel ${reelId} ✅`);
+
+    return {
+      id: reelId,
+      url: item.url || cleanUrl,
+      videoUrl,
+      caption: captionText.replace(/#\w+/g, '').trim(),
+      hashtags: hashtagMatches,
+      timestamp: item.timestamp || new Date().toISOString(),
+      likesCount: item.likesCount || 0,
+      viewsCount: item.videoViewCount || 0,
+      commentsCount: item.commentsCount || 0,
+      ownerUsername: item.ownerUsername || '',
+    };
+  } catch (error: any) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`⚠️ [Apify] Falha ao buscar reel individual (${cleanUrl}): ${msg}`);
+    // Retornar null para que o pipeline use o fallback (yt-dlp)
+    return null;
+  }
+}

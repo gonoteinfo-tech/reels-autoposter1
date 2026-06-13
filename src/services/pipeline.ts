@@ -16,7 +16,7 @@ import {
   getUserById,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, randomSleep } from './instagram-downloader';
-import { discoverReelsApify, isApifyConfigured } from './apify-discoverer';
+import { discoverReelsApify, fetchSingleReelApify, isApifyConfigured } from './apify-discoverer';
 import { addLogoToVideo } from './video-processor';
 import { uploadVideo, generateR2Key } from './storage';
 import { publishReel as publishToInstagram } from './instagram-publisher';
@@ -107,21 +107,48 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       let filePath: string;
       let metadata: { title?: string; description?: string; duration?: number };
 
-      // Se o reel tem direct_video_url (fornecida pela Apify), usar download direto
-      const directUrl = (reel as any).direct_video_url as string | undefined;
+      // 1ª tentativa: URL direta da Apify (descoberta automática de perfil)
+      let directUrl = (reel as any).direct_video_url as string | undefined;
+
+      // 2ª tentativa: buscar URL direta via Apify para reels adicionados manualmente
+      const isInstagramUrl = reel!.instagram_url.includes('instagram.com');
+      if (!directUrl && isInstagramUrl && isApifyConfigured()) {
+        console.log(`🤖 [Apify] Buscando URL direta para reel #${reelId} adicionado manualmente...`);
+        try {
+          const apifyInfo = await fetchSingleReelApify(reel!.instagram_url);
+          if (apifyInfo?.videoUrl) {
+            directUrl = apifyInfo.videoUrl;
+            // Atualizar caption e hashtags se vieram da Apify e o reel não tinha
+            if (!reel!.caption && apifyInfo.caption) {
+              updateReel(reelId, {
+                caption: apifyInfo.caption,
+                hashtags: apifyInfo.hashtags.join(' '),
+                original_caption: apifyInfo.caption,
+              });
+              reel = getReelById(reelId)!;
+            }
+            console.log(`🤖 [Apify] URL direta obtida com sucesso para reel #${reelId}`);
+          }
+        } catch (apifyErr) {
+          const apifyMsg = apifyErr instanceof Error ? apifyErr.message : String(apifyErr);
+          console.warn(`⚠️ [Apify] Falha ao buscar URL direta: ${apifyMsg}. Usando fallback yt-dlp.`);
+        }
+      }
 
       if (directUrl) {
-        console.log(`📥 Reel #${reelId}: usando URL direta da Apify (sem cookies)`);
-        filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reel!.instagram_id || String(reelId));
+        // Download por URL direta — sem cookies, sem bloqueio de VPS
+        const reelIdForFile = reel!.instagram_id || String(reelId);
+        filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reelIdForFile);
         metadata = { title: '', description: reel!.caption || '', duration: 0 };
       } else {
-        // Fallback: yt-dlp com cookies (TikTok, YouTube, Facebook ou Instagram sem Apify)
+        // 3ª tentativa (fallback): yt-dlp com cookies (TikTok, YouTube, Facebook)
+        console.log(`⚠️ Reel #${reelId}: usando yt-dlp com cookies (fallback)`);
         const result = await downloadReel(reel!.instagram_url, DOWNLOADS_DIR);
         filePath = result.filePath;
         metadata = result.metadata;
       }
 
-      const originalCaption = metadata.description || metadata.title || '';
+      const originalCaption = metadata.description || metadata.title || reel!.caption || '';
       
       // Reescrever a legenda original se nenhuma legenda customizada existir
       let finalCaption = reel!.caption;
