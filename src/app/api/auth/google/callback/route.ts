@@ -16,10 +16,12 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
   const error = searchParams.get('error');
+  const errorDescription = searchParams.get('error_description');
 
   if (error || !code) {
-    console.error('❌ Erro no retorno do Google OAuth:', error);
-    return NextResponse.redirect(new URL('/?error=oauth_failed', request.url));
+    console.error('❌ Erro no retorno do Google OAuth:', error, errorDescription);
+    const details = errorDescription || error || 'Código de autorização ausente';
+    return NextResponse.redirect(new URL(`/?error=oauth_failed&details=${encodeURIComponent(details)}`, request.url));
   }
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -27,21 +29,28 @@ export async function GET(request: Request) {
 
   if (!clientId || !clientSecret) {
     console.error('❌ Credenciais do Google OAuth ausentes no servidor');
-    return NextResponse.redirect(new URL('/?error=server_configuration', request.url));
+    return NextResponse.redirect(
+      new URL('/?error=server_configuration&details=GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET nao configurado no .env', request.url)
+    );
   }
 
+  // Detectar protocolo
+  const host = request.headers.get('host') || 'localhost:3000';
+  let proto = request.headers.get('x-forwarded-proto') || (request.url.startsWith('https:') ? 'https' : '');
+  if (!proto) {
+    const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('192.168.') || host.startsWith('10.');
+    proto = isLocal ? 'http' : 'https';
+  }
+  const isSecure = proto === 'https';
+
   try {
-    const host = request.headers.get('host') || 'localhost:3000';
     const appUrl = process.env.APP_URL;
     let redirectUri;
     if (appUrl) {
       redirectUri = `${appUrl.replace(/\/$/, '')}/api/auth/google/callback`;
     } else {
-      const protocol = request.headers.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
-      redirectUri = `${protocol}://${host}/api/auth/google/callback`;
+      redirectUri = `${proto}://${host}/api/auth/google/callback`;
     }
-
-
 
     // 1. Trocar código por tokens
     const response = await axios.post('https://oauth2.googleapis.com/token', {
@@ -105,7 +114,7 @@ export async function GET(request: Request) {
     const cookieStore = await cookies();
     cookieStore.set('session', sessionId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production' || !host.includes('localhost'),
+      secure: isSecure,
       sameSite: 'lax',
       path: '/',
       maxAge: 60 * 60 * 24 * 7 // 7 dias
@@ -117,6 +126,9 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL('/dashboard', request.url));
   } catch (err: any) {
     console.error('❌ Falha ao processar callback de autenticação:', err.response?.data || err.message || err);
-    return NextResponse.redirect(new URL('/?error=callback_error', request.url));
+    const errorDetails = err.response?.data?.error_description || err.response?.data?.error || err.message || 'Erro desconhecido no processamento do token';
+    return NextResponse.redirect(
+      new URL(`/?error=callback_error&details=${encodeURIComponent(errorDetails)}`, request.url)
+    );
   }
 }

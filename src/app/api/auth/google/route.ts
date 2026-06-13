@@ -14,13 +14,18 @@ export async function GET(request: Request) {
 
   // Obter a URL de redirecionamento (via variável de ambiente ou dinamicamente)
   const appUrl = process.env.APP_URL;
+  const host = request.headers.get('host') || 'localhost:3000';
   let redirectUri;
   if (appUrl) {
     redirectUri = `${appUrl.replace(/\/$/, '')}/api/auth/google/callback`;
   } else {
-    const host = request.headers.get('host') || 'localhost:3000';
-    const protocol = request.headers.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
-    redirectUri = `${protocol}://${host}/api/auth/google/callback`;
+    // Detectar protocolo de forma inteligente
+    let proto = request.headers.get('x-forwarded-proto') || (request.url.startsWith('https:') ? 'https' : '');
+    if (!proto) {
+      const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('192.168.') || host.startsWith('10.');
+      proto = isLocal ? 'http' : 'https';
+    }
+    redirectUri = `${proto}://${host}/api/auth/google/callback`;
   }
 
 

@@ -6,7 +6,7 @@ export default async function SourcesPage() {
   const user = await getLoggedInUser();
 
   if (!user) {
-    redirect("/");
+    redirect("/?error=not_authenticated");
   }
 
   return <SourcesClient user={user} />;

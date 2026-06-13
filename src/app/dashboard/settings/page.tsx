@@ -6,7 +6,7 @@ export default async function SettingsPage() {
   const user = await getLoggedInUser();
 
   if (!user) {
-    redirect("/");
+    redirect("/?error=not_authenticated");
   }
 
   return <SettingsClient user={user} />;

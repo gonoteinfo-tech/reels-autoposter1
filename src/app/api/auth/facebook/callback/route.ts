@@ -10,7 +10,7 @@ export async function GET(request: Request) {
     if (!user) {
       console.error('❌ Callback do Facebook acionado sem usuário autenticado.');
       return NextResponse.redirect(
-        new URL('/settings?auth=error&message=Usuário não autenticado no sistema', request.url)
+        new URL('/dashboard/settings?auth=error&message=Usuário não autenticado no sistema', request.url)
       );
     }
 

@@ -14,11 +14,19 @@ import {
   TrendingUp, 
   Scissors,
   Check,
-  Plus
+  Plus,
+  AlertCircle
 } from "lucide-react";
 import { Instagram, Facebook } from "@/components/icons";
 
-export default async function LandingPage() {
+interface PageProps {
+  searchParams: Promise<{ error?: string; details?: string }>;
+}
+
+export default async function LandingPage(props: PageProps) {
+  const searchParams = await props.searchParams;
+  const error = searchParams.error;
+  const details = searchParams.details;
   const user = await getLoggedInUser();
   const ctaLink = user ? "/dashboard" : "/api/auth/google";
   const ctaText = user ? "Acessar Painel" : "Criar Conta Grátis";
@@ -100,6 +108,27 @@ export default async function LandingPage() {
 
       {/* Hero Section */}
       <section className="relative pt-20 pb-24 px-6 max-w-7xl mx-auto text-center flex flex-col items-center">
+        {error && (
+          <div className="mb-8 p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-200 text-sm max-w-2xl text-left flex items-start gap-3 glass-card">
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-bold text-white mb-1">Falha na Autenticação</h4>
+              <p className="text-red-300 text-xs">
+                {error === 'callback_error' && 'Erro ao processar o retorno do Google. Verifique se o e-mail está cadastrado ou se há problemas de conexão.'}
+                {error === 'oauth_failed' && 'O Google retornou um erro durante a autorização.'}
+                {error === 'server_configuration' && 'Erro de configuração do Google OAuth no servidor (Client ID ou Client Secret ausente).'}
+                {error === 'not_authenticated' && 'Sua sessão expirou ou o cookie de autenticação não pôde ser gravado. Se estiver acessando via HTTP (sem SSL), certifique-se de configurar o APP_URL corretamente.'}
+                {error !== 'callback_error' && error !== 'oauth_failed' && error !== 'server_configuration' && error !== 'not_authenticated' && `Erro: ${error}`}
+              </p>
+              {details && (
+                <pre className="mt-2 p-2 rounded bg-black/40 border border-white/5 text-[10px] text-gray-400 overflow-x-auto whitespace-pre-wrap font-mono max-w-full">
+                  {details}
+                </pre>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-violet-500/20 bg-violet-500/5 text-violet-400 text-xs font-semibold mb-6 animate-pulse">
           <Sparkles className="w-3.5 h-3.5" />
           <span>Automação 100% em Nuvem (SaaS)</span>
