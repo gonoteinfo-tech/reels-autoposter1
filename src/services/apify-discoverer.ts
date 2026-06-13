@@ -40,14 +40,19 @@ export async function discoverReelsApify(
 
   const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
 
-  // Actor oficial da Apify para Instagram — mantido ativamente contra mudanças do Instagram
-  const actorId = process.env.APIFY_ACTOR || 'apify/instagram-reel-scraper';
+  // Actor oficial principal da Apify para Instagram
+  // apify/instagram-scraper é o actor mais mantido e confiável
+  const actorId = process.env.APIFY_ACTOR || 'apify/instagram-scraper';
 
   try {
     const run = await client.actor(actorId).call(
       {
-        username: [username],
+        // Formato do actor apify/instagram-scraper
+        usernames: [username],
+        resultsType: 'posts',
         resultsLimit: limit,
+        // Filtrar apenas vídeos/reels
+        onlyPostsWithHashtag: undefined,
       },
       {
         // Timeout de 3 minutos para a execução do actor
@@ -89,6 +94,10 @@ export async function discoverReelsApify(
       // Extrair ID — shortcode ou id
       const reelId = item.shortCode || item.id || item.shortcode || '';
       if (!reelId) continue;
+
+      // Filtrar apenas vídeos (reels) — ignorar fotos
+      const isVideo = item.type === 'Video' || item.isVideo || item.videoUrl || item.videoPlaybackUrl;
+      if (!isVideo) continue;
 
       // Extrair hashtags do caption
       const captionText = item.caption || item.text || '';
@@ -177,13 +186,14 @@ export async function fetchSingleReelApify(
 
   const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
 
-  // Usar o actor de post scraper — aceita URLs diretas de reels
-  const actorId = 'apify/instagram-post-scraper';
+  // Usar o actor principal de Instagram — aceita URLs diretas
+  const actorId = process.env.APIFY_ACTOR || 'apify/instagram-scraper';
 
   try {
     const run = await client.actor(actorId).call(
       {
         directUrls: [cleanUrl],
+        resultsType: 'posts',
         resultsLimit: 1,
       },
       {
