@@ -10,6 +10,7 @@ import {
 import { getLoggedInUser } from '@/services/auth';
 import { discoverReels, extractVideoId } from '@/services/instagram-downloader';
 import { processReel } from '@/services/pipeline';
+import { isApifyConfigured, discoverReelsApify } from '@/services/apify-discoverer';
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -64,27 +65,53 @@ export async function POST(request: Request) {
     console.log(`📥 [Importar Manual] Varrendo @${source.username} para Usuário #${user.id} (limite: ${maxReels})...`);
 
     const platform = (source as any).platform || 'instagram';
-    // Varredura síncrona dos Reels para saber quantos foram descobertos
-    const urls = await discoverReels(source.username, platform, maxReels);
-    
     let newCount = 0;
     const newReelIds: number[] = [];
 
-    for (const url of urls) {
-      const existing = getReelByUrl(url, user.id);
-      if (existing) continue;
+    // ── Instagram: usar Apify se configurado ──
+    if (platform === 'instagram' && isApifyConfigured()) {
+      console.log(`🤖 [Apify] Usando Apify para varredura manual de @${source.username}`);
+      const apifyReels = await discoverReelsApify(source.username, maxReels);
 
-      const videoId = extractVideoId(url, platform);
-      const newReel = createReel({
-        source_id: source.id,
-        source_username: source.username,
-        instagram_url: url,
-        instagram_id: videoId || undefined,
-        user_id: user.id,
-      });
+      for (const apifyReel of apifyReels) {
+        const url = apifyReel.url;
+        const existing = getReelByUrl(url, user.id);
+        if (existing) continue;
 
-      newReelIds.push(newReel.id);
-      newCount++;
+        const newReel = createReel({
+          source_id: source.id,
+          source_username: source.username,
+          instagram_url: url,
+          instagram_id: apifyReel.id,
+          caption: apifyReel.caption || '',
+          hashtags: apifyReel.hashtags.join(' '),
+          user_id: user.id,
+          direct_video_url: apifyReel.videoUrl, // Salvar URL direta para evitar downloads bloqueados na VPS
+        });
+
+        newReelIds.push(newReel.id);
+        newCount++;
+      }
+    } else {
+      // Outras plataformas ou Instagram sem Apify (fallback yt-dlp)
+      const urls = await discoverReels(source.username, platform, maxReels);
+
+      for (const url of urls) {
+        const existing = getReelByUrl(url, user.id);
+        if (existing) continue;
+
+        const videoId = extractVideoId(url, platform);
+        const newReel = createReel({
+          source_id: source.id,
+          source_username: source.username,
+          instagram_url: url,
+          instagram_id: videoId || undefined,
+          user_id: user.id,
+        });
+
+        newReelIds.push(newReel.id);
+        newCount++;
+      }
     }
 
     // Atualizar data da última verificação
