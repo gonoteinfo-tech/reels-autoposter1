@@ -103,7 +103,7 @@ export default function AddReelModal({
                     <Instagram className="w-5 h-5" style={{ color: "var(--instagram)" }} />
                   </div>
                   <div>
-                    <h3 className="font-bold text-white">Adicionar Reel</h3>
+                    <h3 className="font-bold text-heading">Adicionar Reel</h3>
                     <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                       Cole a URL do Instagram Reel
                     </p>

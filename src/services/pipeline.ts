@@ -5,6 +5,7 @@ import {
   initDatabase,
   getActiveSources,
   getReelByUrl,
+  getReelByInstagramId,
   createReel,
   updateReelStage,
   updateReel,
@@ -14,6 +15,7 @@ import {
   getAppSettings,
   getAllUsers,
   getUserById,
+  getLastPublishedAt,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, randomSleep } from './instagram-downloader';
 import { discoverReelsApify, fetchSingleReelApify, isApifyConfigured } from './apify-discoverer';
@@ -108,7 +110,7 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       let metadata: { title?: string; description?: string; duration?: number };
 
       // 1ª tentativa: URL direta da Apify (descoberta automática de perfil)
-      let directUrl = (reel as any).direct_video_url as string | undefined;
+      let directUrl = reel!.direct_video_url ?? undefined;
 
       // 2ª tentativa: buscar URL direta via Apify para reels adicionados manualmente
       const isInstagramUrl = reel!.instagram_url.includes('instagram.com');
@@ -118,10 +120,9 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
           const apifyInfo = await fetchSingleReelApify(reel!.instagram_url);
           if (apifyInfo?.videoUrl) {
             directUrl = apifyInfo.videoUrl;
-            // Atualizar caption e hashtags se vieram da Apify e o reel não tinha
-            if (!reel!.caption && apifyInfo.caption) {
+            // Guardar a legenda da FONTE em original_caption (caption fica vazio p/ a IA reescrever)
+            if (!reel!.original_caption && apifyInfo.caption) {
               updateReel(reelId, {
-                caption: apifyInfo.caption,
                 hashtags: apifyInfo.hashtags.join(' '),
                 original_caption: apifyInfo.caption,
               });
@@ -139,7 +140,7 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
         // Download por URL direta — sem cookies, sem bloqueio de VPS
         const reelIdForFile = reel!.instagram_id || String(reelId);
         filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reelIdForFile);
-        metadata = { title: '', description: reel!.caption || '', duration: 0 };
+        metadata = { title: '', description: reel!.original_caption || reel!.caption || '', duration: 0 };
       } else {
         // 3ª tentativa (fallback): yt-dlp com cookies (TikTok, YouTube, Facebook)
         console.log(`⚠️ Reel #${reelId}: usando yt-dlp com cookies (fallback)`);
@@ -148,9 +149,9 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
         metadata = result.metadata;
       }
 
-      const originalCaption = metadata.description || metadata.title || reel!.caption || '';
-      
-      // Reescrever a legenda original se nenhuma legenda customizada existir
+      const originalCaption = metadata.description || metadata.title || reel!.original_caption || reel!.caption || '';
+
+      // A IA reescreve a legenda da fonte. Só preserva se o usuário tiver definido uma legenda custom.
       let finalCaption = reel!.caption;
       if (!finalCaption) {
         finalCaption = await rewriteCaption(originalCaption);
@@ -349,6 +350,7 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
 async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<void> {
   const settings = getAppSettings(user.id);
   const maxReels = settings.max_reels_per_run;
+  const discoveryLimit = settings.discovery_limit;
 
   // Fase 1: Descobrir novos reels
   console.log(`\n📥 [Usuário #${user.id}] ── Fase de Descoberta ──`);
@@ -364,14 +366,15 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
     for (const source of activeSources) {
       if (source.username === 'manual') continue;
 
-      // Limitar a frequência de descoberta automática para no máximo uma vez a cada 30 minutos
+      // Limitar a frequência de descoberta automática (economiza crédito da Apify).
+      // Configurável via discovery_interval_minutes (padrão 6h) — independente do ciclo do cron.
       if (!forceDiscovery && source.last_checked_at) {
         try {
           const lastCheckedISO = source.last_checked_at.replace(' ', 'T') + 'Z';
           const lastCheckedTime = new Date(lastCheckedISO).getTime();
           const diffMinutes = (Date.now() - lastCheckedTime) / (1000 * 60);
-          if (diffMinutes < 30) {
-            console.log(`📥 [Usuário #${user.id}] @${source.username}: Descoberta automática pulada (last check há ${diffMinutes.toFixed(1)} min)`);
+          if (diffMinutes < settings.discovery_interval_minutes) {
+            console.log(`📥 [Usuário #${user.id}] @${source.username}: Descoberta pulada (última há ${diffMinutes.toFixed(1)} min, intervalo: ${settings.discovery_interval_minutes} min)`);
             continue;
           }
         } catch (err) {
@@ -388,12 +391,13 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
         if (platform === 'instagram' && isApifyConfigured()) {
           console.log(`🤖 [Apify] Usando Apify para descoberta de @${source.username}`);
 
-          const apifyReels = await discoverReelsApify(source.username, 10);
+          const apifyReels = await discoverReelsApify(source.username, discoveryLimit);
           let newCount = 0;
 
           for (const apifyReel of apifyReels) {
             const reelUrl = apifyReel.url;
-            const existing = getReelByUrl(reelUrl, user.id);
+            const existing = getReelByUrl(reelUrl, user.id)
+              || (apifyReel.id ? getReelByInstagramId(apifyReel.id, user.id) : null);
             if (existing) continue;
 
             // Criar registro no banco com a URL direta do vídeo embutida no campo caption
@@ -403,8 +407,9 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
               source_username: source.username,
               instagram_url: reelUrl,
               instagram_id: apifyReel.id,
-              // A legenda já vem da Apify — não precisa de AI rewrite se estiver preenchida
-              caption: apifyReel.caption || '',
+              // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
+              caption: '',
+              original_caption: apifyReel.caption || '',
               hashtags: apifyReel.hashtags.join(' '),
               user_id: user.id,
               // Campo extra para o pipeline de download usar URL direta
@@ -425,8 +430,17 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
           continue; // Próximo source
         }
 
-        // ── Outras plataformas (TikTok, YouTube, Facebook) ou Instagram sem Apify ──
-        const urls = await discoverReels(source.username, platform, 10);
+        // ── Instagram sem Apify: pular para não tomar HTTP 429 do IP do VPS ──
+        if (platform === 'instagram' && !isApifyConfigured()) {
+          console.warn(
+            `⚠️ [Usuário #${user.id}] @${source.username}: descoberta do Instagram ignorada — configure APIFY_TOKEN (yt-dlp é bloqueado com HTTP 429 em IPs de VPS).`
+          );
+          updateSourceLastChecked(source.id);
+          continue;
+        }
+
+        // ── Outras plataformas (TikTok, YouTube, Facebook) ──
+        const urls = await discoverReels(source.username, platform, discoveryLimit);
 
         let newCount = 0;
         for (const url of urls) {
@@ -463,10 +477,32 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
     console.log(`📥 [Usuário #${user.id}] Total de novos reels descobertos: ${totalDiscovered}`);
   }
 
-  // Fase 2: Processar reels pendentes
+  // Fase 2: Processar e publicar reels pendentes (com trava de ritmo de postagem)
   console.log(`\n🔄 [Usuário #${user.id}] ── Fase de Processamento ──`);
 
-  // Buscar reels do usuário em estágios que precisam de processamento
+  // Se a publicação automática estiver desligada, apenas descobrimos (Fase 1) e paramos aqui.
+  if (!settings.auto_publish) {
+    console.log(`🔄 [Usuário #${user.id}] Publicação automática desligada — apenas descoberta nesta execução.`);
+    return;
+  }
+
+  // ── Trava de intervalo entre publicações ──
+  // Garante "no máximo 1 publicação a cada N minutos", independente da frequência do cron.
+  const intervalMs = settings.publish_interval_minutes * 60 * 1000;
+  const lastPublishedAt = getLastPublishedAt(user.id);
+  if (intervalMs > 0 && lastPublishedAt) {
+    const elapsedMs = Date.now() - new Date(lastPublishedAt).getTime();
+    if (elapsedMs < intervalMs) {
+      const restanteMin = ((intervalMs - elapsedMs) / 60000).toFixed(1);
+      console.log(
+        `⏸️ [Usuário #${user.id}] Trava de publicação ativa — última postagem há ${(elapsedMs / 60000).toFixed(1)} min. ` +
+          `Aguardando mais ${restanteMin} min (intervalo: ${settings.publish_interval_minutes} min).`
+      );
+      return;
+    }
+  }
+
+  // Buscar reels pendentes (mais antigos primeiro), em ordem de estágio do pipeline
   const pendingStages: ReelStage[] = [
     'discovered',
     'downloading',
@@ -478,53 +514,63 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
     'publishing',
   ];
 
+  // Limitamos o número de TENTATIVAS por execução (proteção contra muitos reels quebrados).
+  // A publicação em si é limitada a 1 pela trava de tempo (ao publicar, atualizamos lastPublishedAt
+  // e a verificação abaixo interrompe o laço).
+  const maxAttempts = Math.max(1, maxReels);
   const pendingReels: { id: number; stage: ReelStage }[] = [];
   for (const stage of pendingStages) {
-    const reels = getReelsByStage(user.id, stage, maxReels - pendingReels.length);
+    const reels = getReelsByStage(user.id, stage, maxAttempts - pendingReels.length);
     for (const reel of reels) {
-      if (pendingReels.length >= maxReels) break;
+      if (pendingReels.length >= maxAttempts) break;
       pendingReels.push({ id: reel.id, stage: reel.stage });
     }
-    if (pendingReels.length >= maxReels) break;
+    if (pendingReels.length >= maxAttempts) break;
   }
 
   if (pendingReels.length === 0) {
     console.log(`🔄 [Usuário #${user.id}] Nenhum reel pendente para processar.`);
-  } else {
-    console.log(`🔄 [Usuário #${user.id}] ${pendingReels.length} reels para processar (limite: ${maxReels})`);
-
-    let successCount = 0;
-    let errorCount = 0;
-
-    for (const pending of pendingReels) {
-      try {
-        const results = await processReel(pending.id);
-        const hasError = results.some((r) => !r.success);
-
-        if (hasError) {
-          errorCount++;
-        } else {
-          successCount++;
-        }
-
-        // Log detalhado dos resultados
-        for (const result of results) {
-          const icon = result.success ? '✅' : '❌';
-          console.log(
-            `  ${icon} Reel #${result.reel_id} [${result.stage}]: ` +
-              `${result.message} (${result.duration_ms}ms)`
-          );
-        }
-      } catch (error) {
-        errorCount++;
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error(`❌ [Usuário #${user.id}] Erro inesperado ao processar Reel #${pending.id}: ${msg}`);
-        updateReelStage(pending.id, 'error', msg);
-      }
-    }
-
-    console.log(`\n🔄 [Usuário #${user.id}] Processamento concluído: ${successCount} sucesso, ${errorCount} erros`);
+    return;
   }
+
+  console.log(
+    `🔄 [Usuário #${user.id}] ${pendingReels.length} reel(s) candidato(s); publicando no máximo 1 (intervalo: ${settings.publish_interval_minutes} min)`
+  );
+
+  let publishedCount = 0;
+  let errorCount = 0;
+
+  for (const pending of pendingReels) {
+    // Já publicou 1 nesta execução? Para — o limite é 1 por janela de tempo.
+    if (publishedCount >= 1) break;
+
+    try {
+      const results = await processReel(pending.id);
+      const hasError = results.some((r) => !r.success);
+      const publicou = results.some((r) => r.stage === 'publishing' && r.success);
+
+      if (publicou) publishedCount++;
+      if (hasError) errorCount++;
+
+      // Log detalhado dos resultados
+      for (const result of results) {
+        const icon = result.success ? '✅' : '❌';
+        console.log(
+          `  ${icon} Reel #${result.reel_id} [${result.stage}]: ` +
+            `${result.message} (${result.duration_ms}ms)`
+        );
+      }
+    } catch (error) {
+      errorCount++;
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`❌ [Usuário #${user.id}] Erro inesperado ao processar Reel #${pending.id}: ${msg}`);
+      updateReelStage(pending.id, 'error', msg);
+    }
+  }
+
+  console.log(
+    `\n🔄 [Usuário #${user.id}] Processamento concluído: ${publishedCount} publicado(s), ${errorCount} erro(s)`
+  );
 }
 
 /**
@@ -589,7 +635,8 @@ function buildCaption(caption: string, hashtags: string, template: string): stri
 
   const parts: string[] = [];
   if (caption) parts.push(caption);
-  if (hashtags) parts.push(hashtags);
+  // Só anexa as hashtags da fonte se a legenda (ex: reescrita pela IA) ainda não tiver hashtags
+  if (hashtags && !caption.includes('#')) parts.push(hashtags);
 
   return parts.join('\n\n');
 }

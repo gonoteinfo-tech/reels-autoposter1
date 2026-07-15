@@ -57,6 +57,8 @@ export interface Reel {
   local_path: string | null;
   processed_path: string | null;
   r2_url: string | null;
+  /** URL direta do vídeo fornecida pela Apify (evita cookies/scraping no download) */
+  direct_video_url: string | null;
   stage: ReelStage;
   error_message: string | null;
   ig_post_id: string | null;
@@ -71,7 +73,14 @@ export interface AppSettings {
   logo_position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
   logo_scale: number;
   cron_schedule: string;
+  /** Máximo de tentativas de processamento por execução (proteção contra reels quebrados) */
   max_reels_per_run: number;
+  /** Quantos vídeos descobrir/puxar por sincronização */
+  discovery_limit: number;
+  /** Intervalo mínimo (minutos) entre descobertas de cada fonte — controla consumo de crédito Apify */
+  discovery_interval_minutes: number;
+  /** Intervalo mínimo (minutos) entre publicações — trava de ritmo de postagem */
+  publish_interval_minutes: number;
   auto_publish: boolean;
   custom_caption_template: string;
   instagram_enabled: boolean;

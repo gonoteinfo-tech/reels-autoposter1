@@ -7,7 +7,8 @@ import {
   updateUserGoogleId,
   getUserById,
   createUser,
-  createSession
+  createSession,
+  ensureProIfListed
 } from '@/services/database';
 
 export const dynamic = 'force-dynamic';
@@ -17,11 +18,21 @@ export async function GET(request: Request) {
   const code = searchParams.get('code');
   const error = searchParams.get('error');
   const errorDescription = searchParams.get('error_description');
+  const state = searchParams.get('state');
 
   if (error || !code) {
     console.error('❌ Erro no retorno do Google OAuth:', error, errorDescription);
     const details = errorDescription || error || 'Código de autorização ausente';
     return NextResponse.redirect(new URL(`/?error=oauth_failed&details=${encodeURIComponent(details)}`, request.url));
+  }
+
+  // Validar o token "state" anti-CSRF gravado em /api/auth/google
+  const cookieStore = await cookies();
+  const expectedState = cookieStore.get('oauth_state')?.value;
+  cookieStore.delete('oauth_state'); // uso único
+  if (!expectedState || !state || state !== expectedState) {
+    console.error('❌ State OAuth inválido ou ausente (possível CSRF)');
+    return NextResponse.redirect(new URL('/?error=invalid_state', request.url));
   }
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
@@ -103,6 +114,10 @@ export async function GET(request: Request) {
       });
     }
 
+    // Promover a 'pro' se o e-mail estiver na lista de membros pro (ADMIN_EMAIL + PRO_EMAILS)
+    ensureProIfListed(user.email);
+    user = getUserById(user.id)!;
+
     // 4. Criar Sessão
     const sessionId = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date();
@@ -111,7 +126,6 @@ export async function GET(request: Request) {
     createSession(sessionId, user.id, expiresAt);
 
     // 5. Configurar Cookie
-    const cookieStore = await cookies();
     cookieStore.set('session', sessionId, {
       httpOnly: true,
       secure: isSecure,

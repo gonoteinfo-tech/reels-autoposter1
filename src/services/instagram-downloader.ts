@@ -94,41 +94,73 @@ async function findGalleryDl(): Promise<string> {
 }
 
 /**
+ * Detecta se um erro do yt-dlp/gallery-dl é um rate limit (HTTP 429) do provedor.
+ */
+export function isRateLimitError(message: string): boolean {
+  return /429|too many requests|rate.?limit/i.test(message);
+}
+
+/**
  * Executa o yt-dlp de forma resiliente.
  * Tenta com cookies do navegador primeiro, e se falhar (ex: navegador não encontrado ou bloqueado),
  * tenta novamente sem usar cookies.
+ *
+ * Em caso de HTTP 429 (Too Many Requests), aplica backoff exponencial com jitter
+ * antes de re-tentar. Atenção: em IPs de datacenter/VPS o Instagram costuma manter o
+ * 429 indefinidamente — a solução robusta é usar a Apify (proxies residenciais).
  */
 async function execYtDlpResilient(
   ytdlp: string,
   args: string[],
-  options: { maxBuffer: number; timeout: number }
+  options: { maxBuffer: number; timeout: number },
+  maxRateLimitRetries: number = 2
 ): Promise<{ stdout: string; stderr: string }> {
-  try {
-    return await execFileAsync(ytdlp, args, options);
-  } catch (error: any) {
-    const hasCookiesFromBrowser = args.includes('--cookies-from-browser');
-    const hasCookiesFile = args.includes('--cookies');
-    
-    if (hasCookiesFromBrowser || hasCookiesFile) {
-      console.log('⚠️ Falha ao usar cookies (navegador ou arquivo) ou post bloqueado. Tentando sem cookies...');
-      
-      const cleanedArgs: string[] = [];
-      for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--cookies-from-browser' || args[i] === '--cookies') {
-          i++; // Pular o próximo argumento (nome do navegador ou caminho do arquivo)
-          continue;
+  const runOnce = async (runArgs: string[]) => {
+    try {
+      return await execFileAsync(ytdlp, runArgs, options);
+    } catch (error: any) {
+      const hasCookiesFromBrowser = runArgs.includes('--cookies-from-browser');
+      const hasCookiesFile = runArgs.includes('--cookies');
+
+      if (hasCookiesFromBrowser || hasCookiesFile) {
+        console.log('⚠️ Falha ao usar cookies (navegador ou arquivo) ou post bloqueado. Tentando sem cookies...');
+
+        const cleanedArgs: string[] = [];
+        for (let i = 0; i < runArgs.length; i++) {
+          if (runArgs[i] === '--cookies-from-browser' || runArgs[i] === '--cookies') {
+            i++; // Pular o próximo argumento (nome do navegador ou caminho do arquivo)
+            continue;
+          }
+          cleanedArgs.push(runArgs[i]);
         }
-        cleanedArgs.push(args[i]);
-      }
-      
-      try {
+
         return await execFileAsync(ytdlp, cleanedArgs, options);
-      } catch (retryError: any) {
-        throw retryError;
       }
+
+      throw error;
     }
-    
-    throw error;
+  };
+
+  let attempt = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      return await runOnce(args);
+    } catch (error: any) {
+      const msg = error instanceof Error ? error.message : String(error);
+
+      if (isRateLimitError(msg) && attempt < maxRateLimitRetries) {
+        attempt++;
+        const backoffMs = Math.min(30000, 2000 * 2 ** attempt) + Math.floor(Math.random() * 2000);
+        console.warn(
+          `⚠️ HTTP 429 (rate limit) — tentativa ${attempt}/${maxRateLimitRetries}, aguardando ${(backoffMs / 1000).toFixed(1)}s...`
+        );
+        await new Promise((r) => setTimeout(r, backoffMs));
+        continue;
+      }
+
+      throw error;
+    }
   }
 }
 
@@ -461,6 +493,11 @@ async function discoverReelsYtDlp(
     '--dump-json',
     '--playlist-items', `1:${limit}`,
     '--no-warnings',
+    // Mitigação de rate limit: espaçar requisições e re-tentar no extrator
+    '--sleep-requests', '2',
+    '--min-sleep-interval', '3',
+    '--max-sleep-interval', '8',
+    '--extractor-retries', '2',
     ...getCookiesArgs(),
     profileUrl,
   ];
@@ -508,6 +545,14 @@ async function discoverReelsYtDlp(
     if (msg.includes('404') || msg.includes('not found')) {
       console.log(`📥 Perfil @${username} (${platform}) não encontrado`);
       return [];
+    }
+
+    if (isRateLimitError(msg)) {
+      throw new Error(
+        platform === 'instagram'
+          ? `O Instagram bloqueou o acesso por IP (HTTP 429). Configure a integração Apify (APIFY_TOKEN) para descobrir reels via proxies residenciais, sem bloqueio de VPS.`
+          : `O ${platform} retornou HTTP 429 (rate limit). Aguarde alguns minutos e tente novamente.`
+      );
     }
 
     throw new Error(`❌ Falha ao descobrir vídeos de @${username} (${platform}): ${msg}`);

@@ -18,6 +18,9 @@ const VALID_SETTING_KEYS: Record<keyof AppSettings, 'string' | 'number' | 'boole
   logo_scale: 'number',
   cron_schedule: 'string',
   max_reels_per_run: 'number',
+  discovery_limit: 'number',
+  discovery_interval_minutes: 'number',
+  publish_interval_minutes: 'number',
   auto_publish: 'boolean',
   custom_caption_template: 'string',
   instagram_enabled: 'boolean',
@@ -127,6 +130,27 @@ export async function PUT(request: Request): Promise<NextResponse<ApiResponse>> 
         case 'max_reels_per_run':
           if ((value as number) < 1 || (value as number) > 50) {
             errors.push('"max_reels_per_run" deve estar entre 1 e 50');
+            continue;
+          }
+          break;
+
+        case 'discovery_limit':
+          if ((value as number) < 1 || (value as number) > 50) {
+            errors.push('"discovery_limit" deve estar entre 1 e 50');
+            continue;
+          }
+          break;
+
+        case 'discovery_interval_minutes':
+          if ((value as number) < 5 || (value as number) > 1440) {
+            errors.push('"discovery_interval_minutes" deve estar entre 5 e 1440 (24h)');
+            continue;
+          }
+          break;
+
+        case 'publish_interval_minutes':
+          if ((value as number) < 0 || (value as number) > 1440) {
+            errors.push('"publish_interval_minutes" deve estar entre 0 e 1440 (24h)');
             continue;
           }
           break;

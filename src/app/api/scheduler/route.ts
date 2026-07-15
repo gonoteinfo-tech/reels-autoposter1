@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { initDatabase, getAppSettings } from '@/services/database';
+import { initDatabase } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
 import { getSchedulerStatus, startScheduler, stopScheduler, runNow, isSchedulerActive } from '@/services/scheduler';
 import type { ApiResponse } from '@/types';
@@ -72,6 +72,15 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       return NextResponse.json(
         { success: false, error: 'O campo "action" deve ser "start", "stop" ou "run-now"' },
         { status: 400 }
+      );
+    }
+
+    // start/stop afetam o scheduler GLOBAL (de todos os usuários) — restrito ao admin
+    const isAdmin = user.id === 1 || (!!process.env.ADMIN_EMAIL && user.email === process.env.ADMIN_EMAIL);
+    if ((action === 'start' || action === 'stop') && !isAdmin) {
+      return NextResponse.json(
+        { success: false, error: 'Apenas o administrador pode iniciar ou parar o scheduler global.' },
+        { status: 403 }
       );
     }
 

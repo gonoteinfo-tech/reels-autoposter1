@@ -86,28 +86,32 @@ export function initDatabase(): void {
   `);
 
   // 3. Criar usuário padrão (id = 1) se não existir
-  const adminEmail = process.env.ADMIN_EMAIL || 'admin@localhost';
+  const adminEmailsRaw = process.env.ADMIN_EMAIL || 'admin@localhost';
+  const adminEmails = adminEmailsRaw.split(',').map(e => e.trim().toLowerCase());
+  const firstAdminEmail = adminEmails[0] || 'admin@localhost';
+
   const adminExists = database.prepare("SELECT 1 FROM users WHERE id = 1").get();
   if (!adminExists) {
     database.prepare("INSERT INTO users (id, email, name, picture, plan) VALUES (?, ?, ?, ?, ?)").run(
       1,
-      adminEmail,
+      firstAdminEmail,
       'Administrador',
       null,
       'pro'
     );
-    console.log(`💾 Usuário administrador padrão criado com e-mail: ${adminEmail}`);
+    console.log(`💾 Usuário administrador padrão criado com e-mail: ${firstAdminEmail}`);
   } else {
     // Garantir que o admin permaneça com plano pro
     database.prepare("UPDATE users SET plan = 'pro' WHERE id = 1").run();
   }
 
-  // 3b. Garantir que QUALQUER usuário com o e-mail ADMIN_EMAIL tenha plano 'pro'
-  // (cobre o caso em que o usuário fez login via Google antes de ADMIN_EMAIL ser configurado)
-  if (adminEmail !== 'admin@localhost') {
-    const promoted = database.prepare("UPDATE users SET plan = 'pro' WHERE email = ? AND plan != 'pro'").run(adminEmail);
-    if (promoted.changes > 0) {
-      console.log(`💾 Usuário ${adminEmail} promovido para plano 'pro' automaticamente`);
+  // 3b. Garantir que QUALQUER usuário cujo e-mail esteja na lista de administradores tenha o plano 'pro'
+  for (const email of adminEmails) {
+    if (email && email !== 'admin@localhost') {
+      const promoted = database.prepare("UPDATE users SET plan = 'pro' WHERE email = ? AND plan != 'pro'").run(email);
+      if (promoted.changes > 0) {
+        console.log(`💾 Usuário ${email} promovido para plano 'pro' automaticamente`);
+      }
     }
   }
 
@@ -326,6 +330,9 @@ export function initDatabase(): void {
     logo_scale: String(process.env.LOGO_SCALE || '80'),
     cron_schedule: process.env.CRON_SCHEDULE || '*/30 * * * *',
     max_reels_per_run: String(process.env.MAX_REELS_PER_RUN || '5'),
+    discovery_limit: String(process.env.DISCOVERY_LIMIT || '10'),
+    discovery_interval_minutes: String(process.env.DISCOVERY_INTERVAL_MINUTES || '360'),
+    publish_interval_minutes: String(process.env.PUBLISH_INTERVAL_MINUTES || '30'),
     auto_publish: 'true',
     custom_caption_template: '',
     instagram_enabled: 'true',
@@ -389,6 +396,39 @@ export function updateUserGoogleId(id: number, googleId: string): void {
 export function getAllUsers(): User[] {
   const database = getDb();
   return database.prepare('SELECT * FROM users').all() as User[];
+}
+
+/**
+ * Retorna a lista de e-mails que devem ter plano 'pro' automaticamente,
+ * combinando ADMIN_EMAIL e PRO_EMAILS (separados por vírgula), tudo em minúsculas.
+ */
+export function getProEmails(): string[] {
+  const emails: string[] = [];
+  if (process.env.ADMIN_EMAIL && process.env.ADMIN_EMAIL !== 'admin@localhost') {
+    emails.push(process.env.ADMIN_EMAIL);
+  }
+  if (process.env.PRO_EMAILS) {
+    for (const e of process.env.PRO_EMAILS.split(',')) {
+      const trimmed = e.trim();
+      if (trimmed) emails.push(trimmed);
+    }
+  }
+  return [...new Set(emails.map((e) => e.toLowerCase()))];
+}
+
+/**
+ * Promove para 'pro' o usuário com o e-mail informado, caso ele esteja na lista de membros pro.
+ * Seguro chamar a cada login.
+ */
+export function ensureProIfListed(email: string): void {
+  if (!email) return;
+  const database = getDb();
+  if (getProEmails().includes(email.toLowerCase())) {
+    const r = database
+      .prepare("UPDATE users SET plan = 'pro' WHERE lower(email) = lower(?) AND plan != 'pro'")
+      .run(email);
+    if (r.changes > 0) console.log(`💾 Usuário ${email} promovido para plano 'pro' (lista de membros pro)`);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -902,6 +942,8 @@ export function getAppSettings(userId: number): AppSettings {
       logo_scale: String(process.env.LOGO_SCALE || '80'),
       cron_schedule: process.env.CRON_SCHEDULE || '*/30 * * * *',
       max_reels_per_run: String(process.env.MAX_REELS_PER_RUN || '5'),
+      discovery_limit: String(process.env.DISCOVERY_LIMIT || '10'),
+      publish_interval_minutes: String(process.env.PUBLISH_INTERVAL_MINUTES || '30'),
       auto_publish: 'true',
       custom_caption_template: '',
       instagram_enabled: 'true',
@@ -925,6 +967,11 @@ export function getAppSettings(userId: number): AppSettings {
     logo_scale: Number(settings.logo_scale) || 80,
     cron_schedule: settings.cron_schedule || '*/30 * * * *',
     max_reels_per_run: Number(settings.max_reels_per_run) || 5,
+    discovery_limit: Number(settings.discovery_limit) || 10,
+    discovery_interval_minutes: Number(settings.discovery_interval_minutes) || 360,
+    publish_interval_minutes: settings.publish_interval_minutes !== undefined && settings.publish_interval_minutes !== ''
+      ? Number(settings.publish_interval_minutes)
+      : 30,
     auto_publish: settings.auto_publish !== 'false',
     custom_caption_template: settings.custom_caption_template || '',
     instagram_enabled: settings.instagram_enabled !== 'false',
@@ -1025,9 +1072,25 @@ export function getDashboardStats(userId: number): DashboardStats {
 export function getPublishedTotalCount(userId: number): number {
   const database = getDb();
   const row = database.prepare(`
-    SELECT COUNT(*) as count FROM reels 
+    SELECT COUNT(*) as count FROM reels
     WHERE user_id = ? AND stage = 'published'
   `).get(userId) as { count: number } | undefined;
 
   return row?.count || 0;
+}
+
+/**
+ * Retorna o timestamp ISO da publicação mais recente de um usuário (ou null se nunca publicou).
+ * Usado para aplicar a trava de intervalo entre publicações (ritmo de postagem).
+ */
+export function getLastPublishedAt(userId: number): string | null {
+  const database = getDb();
+  const row = database.prepare(`
+    SELECT published_at FROM reels
+    WHERE user_id = ? AND stage = 'published' AND published_at IS NOT NULL
+    ORDER BY published_at DESC
+    LIMIT 1
+  `).get(userId) as { published_at: string } | undefined;
+
+  return row?.published_at || null;
 }

@@ -4,8 +4,46 @@
  * Execute na VPS: node scripts/test-apify.js
  */
 
-require('dotenv').config({ path: '.env' });
-require('dotenv').config({ path: '.env.local' });
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Carrega variáveis de um arquivo .env para process.env, sem depender do pacote "dotenv".
+ * Não sobrescreve variáveis já definidas no ambiente.
+ */
+function loadEnvFile(relativePath) {
+  const filePath = path.resolve(process.cwd(), relativePath);
+  if (!fs.existsSync(filePath)) return;
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    // Ignorar linhas vazias e comentários
+    if (!line || line.startsWith('#')) continue;
+
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+
+    // Remover aspas envolventes, se houver
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (key && !(key in process.env)) {
+      process.env[key] = value;
+    }
+  }
+}
+
+// .env.local tem prioridade sobre .env (carregado primeiro, não sobrescreve)
+loadEnvFile('.env.local');
+loadEnvFile('.env');
 
 const token = process.env.APIFY_TOKEN;
 

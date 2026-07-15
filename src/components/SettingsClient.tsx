@@ -44,6 +44,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   logo_scale: 80,
   cron_schedule: "*/30 * * * *",
   max_reels_per_run: 5,
+  discovery_limit: 10,
+  discovery_interval_minutes: 360,
+  publish_interval_minutes: 30,
   auto_publish: true,
   custom_caption_template: "",
   instagram_enabled: true,
@@ -260,7 +263,7 @@ export default function SettingsClient({ user }: { user: User }) {
               <Menu className="w-5 h-5" />
             </button>
             <Settings className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
-            <h2 className="text-lg font-bold text-white">Configurações</h2>
+            <h2 className="text-lg font-bold text-heading">Configurações</h2>
           </div>
           <button
             onClick={() => handleSave()}
@@ -297,7 +300,7 @@ export default function SettingsClient({ user }: { user: User }) {
                 <ImageIcon className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
               </div>
               <div>
-                <h3 className="font-bold text-white">Logo / Marca d&apos;água</h3>
+                <h3 className="font-bold text-heading">Logo / Marca d&apos;água</h3>
                 <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                   Será aplicada em todos os vídeos processados
                 </p>
@@ -383,7 +386,7 @@ export default function SettingsClient({ user }: { user: User }) {
                 <Link2 className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
               </div>
               <div>
-                <h3 className="font-bold text-white">Conexão com a Meta (Facebook & Instagram)</h3>
+                <h3 className="font-bold text-heading">Conexão com a Meta (Facebook & Instagram)</h3>
                 <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                   Conecte sua conta para selecionar a página e perfil do Instagram para autopostagem
                 </p>
@@ -404,12 +407,12 @@ export default function SettingsClient({ user }: { user: User }) {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   <div className="p-3 rounded-lg bg-surface-2 border border-surface-border">
                     <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Página do Facebook</p>
-                    <p className="font-bold text-white">{settings.facebook_page_name || "Desconhecido"}</p>
+                    <p className="font-bold text-heading">{settings.facebook_page_name || "Desconhecido"}</p>
                     <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>ID: {settings.facebook_page_id}</p>
                   </div>
                   <div className="p-3 rounded-lg bg-surface-2 border border-surface-border">
                     <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>Instagram Business</p>
-                    <p className="font-bold text-white">@{settings.instagram_username || "Desconhecido"}</p>
+                    <p className="font-bold text-heading">@{settings.instagram_username || "Desconhecido"}</p>
                     <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>ID: {settings.instagram_business_account_id}</p>
                   </div>
                 </div>
@@ -438,7 +441,7 @@ export default function SettingsClient({ user }: { user: User }) {
                 <Clock className="w-5 h-5" style={{ color: "var(--warning)" }} />
               </div>
               <div>
-                <h3 className="font-bold text-white">Agendamento</h3>
+                <h3 className="font-bold text-heading">Agendamento</h3>
                 <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                   Frequência de verificação e processamento
                 </p>
@@ -447,7 +450,7 @@ export default function SettingsClient({ user }: { user: User }) {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="label">Frequência</label>
+                <label className="label">Frequência de sincronização</label>
                 <select
                   value={settings.cron_schedule}
                   onChange={(e) => updateSetting("cron_schedule", e.target.value)}
@@ -459,15 +462,60 @@ export default function SettingsClient({ user }: { user: User }) {
                 </select>
               </div>
               <div>
-                <label className="label">Máximo de Reels por execução</label>
+                <label className="label">Vídeos puxados por sincronização</label>
                 <input
                   type="number"
                   min={1}
-                  max={25}
+                  max={50}
+                  value={settings.discovery_limit}
+                  onChange={(e) => updateSetting("discovery_limit", Number(e.target.value))}
+                  className="input"
+                />
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                  Quantos reels descobrir/baixar a cada verificação (ex: 5 a 10).
+                </p>
+              </div>
+              <div>
+                <label className="label">Intervalo de descoberta (min)</label>
+                <input
+                  type="number"
+                  min={5}
+                  max={1440}
+                  value={settings.discovery_interval_minutes}
+                  onChange={(e) => updateSetting("discovery_interval_minutes", Number(e.target.value))}
+                  className="input"
+                />
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                  De quanto em quanto tempo varrer cada perfil. Maior = menos crédito Apify (ex: 360 = 6h).
+                </p>
+              </div>
+              <div>
+                <label className="label">Intervalo entre publicações (min)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1440}
+                  value={settings.publish_interval_minutes}
+                  onChange={(e) => updateSetting("publish_interval_minutes", Number(e.target.value))}
+                  className="input"
+                />
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                  Publica no máximo 1 reel por intervalo. Ex: 30 = 1 post a cada 30 min.
+                </p>
+              </div>
+              <div>
+                <label className="label">Máx. tentativas por execução</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
                   value={settings.max_reels_per_run}
                   onChange={(e) => updateSetting("max_reels_per_run", Number(e.target.value))}
                   className="input"
                 />
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                  Proteção: quantos reels tentar processar até conseguir 1 publicação.
+                </p>
               </div>
             </div>
 
@@ -476,7 +524,7 @@ export default function SettingsClient({ user }: { user: User }) {
               <div className="flex items-center gap-3">
                 <Zap className="w-4 h-4" style={{ color: "var(--warning)" }} />
                 <div>
-                  <p className="text-sm font-semibold text-white">Publicação automática</p>
+                  <p className="text-sm font-semibold text-heading">Publicação automática</p>
                   <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                     Publicar automaticamente após processamento
                   </p>
@@ -502,7 +550,7 @@ export default function SettingsClient({ user }: { user: User }) {
                 <Monitor className="w-5 h-5" style={{ color: "var(--instagram)" }} />
               </div>
               <div>
-                <h3 className="font-bold text-white">Destinos de Publicação</h3>
+                <h3 className="font-bold text-heading">Destinos de Publicação</h3>
                 <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                   Selecione onde os Reels serão publicados
                 </p>
@@ -594,7 +642,7 @@ export default function SettingsClient({ user }: { user: User }) {
           {showPageSelector && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
               <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="card w-full max-w-lg max-h-[80vh] overflow-y-auto space-y-4">
-                <h3 className="text-lg font-bold text-white">Selecione a Página do Facebook</h3>
+                <h3 className="text-lg font-bold text-heading">Selecione a Página do Facebook</h3>
                 <p className="text-sm" style={{ color: "var(--text-muted)" }}>
                   Selecione qual página (e conta do Instagram vinculada) deseja utilizar para postagens automáticas. Apenas páginas com Instagram Business correspondente são listadas.
                 </p>
@@ -607,7 +655,7 @@ export default function SettingsClient({ user }: { user: User }) {
                       className="p-4 rounded-xl border border-surface-border bg-surface-2 hover:bg-surface-3 transition-colors cursor-pointer flex items-center justify-between"
                     >
                       <div className="space-y-1">
-                        <p className="font-bold text-white text-sm">{page.name}</p>
+                        <p className="font-bold text-heading text-sm">{page.name}</p>
                         <p className="text-xs" style={{ color: "var(--text-muted)" }}>Facebook ID: {page.id}</p>
                         {page.instagram_business_account ? (
                           <div className="flex items-center gap-1.5 text-xs text-purple-400 mt-1">

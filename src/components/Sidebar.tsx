@@ -64,7 +64,7 @@ export default function Sidebar({
           </div>
           {!collapsed && (
             <div className="min-w-0">
-              <h1 className="text-sm font-bold text-white truncate">
+              <h1 className="text-sm font-bold text-heading truncate">
                 GO POST
               </h1>
               <p
@@ -157,7 +157,7 @@ export default function Sidebar({
               )}
               {!collapsed && (
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-white truncate leading-tight">{user.name}</p>
+                  <p className="text-xs font-bold text-heading truncate leading-tight">{user.name}</p>
                   <div className="flex items-center gap-1.5 mt-0.5">
                     <span className="text-[9px] truncate" style={{ color: "var(--text-muted)", maxWidth: "70px" }}>
                       {user.email}

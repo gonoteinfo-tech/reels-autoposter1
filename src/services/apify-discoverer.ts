@@ -44,21 +44,21 @@ export async function discoverReelsApify(
   // apify/instagram-scraper é o actor mais mantido e confiável
   const actorId = process.env.APIFY_ACTOR || 'apify/instagram-scraper';
 
+  // IMPORTANTE: o actor apify/instagram-scraper só aceita `directUrls` (URL do perfil).
+  // Passar `usernames` faz o actor processar 0 requisições e retornar 0 resultados.
+  const profileUrl = `https://www.instagram.com/${username.replace(/^@/, '').trim()}/`;
+
   try {
     const run = await client.actor(actorId).call(
       {
-        // Formato do actor apify/instagram-scraper
-        usernames: [username],
+        directUrls: [profileUrl],
         resultsType: 'posts',
         resultsLimit: limit,
-        // Filtrar apenas vídeos/reels
-        onlyPostsWithHashtag: undefined,
       },
       {
         // Timeout de 3 minutos para a execução do actor
         timeout: 180,
-        // Usar memória mínima para economizar créditos
-        memory: 256,
+        memory: 512,
       }
     );
 
@@ -105,7 +105,8 @@ export async function discoverReelsApify(
 
       reels.push({
         id: reelId,
-        url: item.url || `https://www.instagram.com/reel/${reelId}/`,
+        // Normalizar para /reel/<code>/ (a Apify retorna /p/<code>/) p/ dedup consistente
+        url: `https://www.instagram.com/reel/${reelId}/`,
         videoUrl,
         caption: captionText.replace(/#\w+/g, '').trim(),
         hashtags: hashtagMatches,

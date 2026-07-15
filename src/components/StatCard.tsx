@@ -70,7 +70,7 @@ export default function StatCard({
       </div>
 
       <p
-        className="text-2xl font-bold text-white mb-1"
+        className="text-2xl font-bold text-heading mb-1"
         style={{ fontVariantNumeric: "tabular-nums" }}
       >
         {value}

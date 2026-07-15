@@ -3,9 +3,11 @@ import {
   initDatabase,
   getSourceById,
   getReelByUrl,
+  getReelByInstagramId,
   createReel,
   updateSourceLastChecked,
   getAppSettings,
+  getLastPublishedAt,
 } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
 import { discoverReels, extractVideoId } from '@/services/instagram-downloader';
@@ -60,9 +62,9 @@ export async function POST(request: Request) {
     }
 
     const settings = getAppSettings(user.id);
-    const maxReels = settings.max_reels_per_run;
+    const discoveryLimit = settings.discovery_limit;
 
-    console.log(`📥 [Importar Manual] Varrendo @${source.username} para Usuário #${user.id} (limite: ${maxReels})...`);
+    console.log(`📥 [Importar Manual] Varrendo @${source.username} para Usuário #${user.id} (puxar até: ${discoveryLimit})...`);
 
     const platform = (source as any).platform || 'instagram';
     let newCount = 0;
@@ -71,11 +73,12 @@ export async function POST(request: Request) {
     // ── Instagram: usar Apify se configurado ──
     if (platform === 'instagram' && isApifyConfigured()) {
       console.log(`🤖 [Apify] Usando Apify para varredura manual de @${source.username}`);
-      const apifyReels = await discoverReelsApify(source.username, maxReels);
+      const apifyReels = await discoverReelsApify(source.username, discoveryLimit);
 
       for (const apifyReel of apifyReels) {
         const url = apifyReel.url;
-        const existing = getReelByUrl(url, user.id);
+        const existing = getReelByUrl(url, user.id)
+          || (apifyReel.id ? getReelByInstagramId(apifyReel.id, user.id) : null);
         if (existing) continue;
 
         const newReel = createReel({
@@ -83,7 +86,9 @@ export async function POST(request: Request) {
           source_username: source.username,
           instagram_url: url,
           instagram_id: apifyReel.id,
-          caption: apifyReel.caption || '',
+          // caption vazio → IA reescreve no download; legenda da fonte vai em original_caption
+          caption: '',
+          original_caption: apifyReel.caption || '',
           hashtags: apifyReel.hashtags.join(' '),
           user_id: user.id,
           direct_video_url: apifyReel.videoUrl, // Salvar URL direta para evitar downloads bloqueados na VPS
@@ -92,9 +97,20 @@ export async function POST(request: Request) {
         newReelIds.push(newReel.id);
         newCount++;
       }
+    } else if (platform === 'instagram' && !isApifyConfigured()) {
+      // Instagram sem Apify cai em yt-dlp → o IP do VPS é bloqueado com HTTP 429.
+      // Em vez de martelar o Instagram, devolvemos um erro acionável.
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'A descoberta do Instagram exige a integração Apify. Configure APIFY_TOKEN no servidor para varrer perfis sem o bloqueio (HTTP 429) do Instagram em IPs de VPS.',
+        },
+        { status: 503 }
+      );
     } else {
-      // Outras plataformas ou Instagram sem Apify (fallback yt-dlp)
-      const urls = await discoverReels(source.username, platform, maxReels);
+      // Outras plataformas (TikTok, YouTube, Facebook)
+      const urls = await discoverReels(source.username, platform, discoveryLimit);
 
       for (const url of urls) {
         const existing = getReelByUrl(url, user.id);
@@ -117,19 +133,36 @@ export async function POST(request: Request) {
     // Atualizar data da última verificação
     updateSourceLastChecked(source.id);
 
-    // Se existirem novos Reels, disparar o pipeline em background
+    // Publicação respeita a trava de intervalo: no máximo 1 reel por janela de tempo.
+    let publishingNow = false;
     if (newReelIds.length > 0) {
-      console.log(`📥 [Importar Manual] Disparando pipeline em background para ${newReelIds.length} novos reels...`);
-      for (const reelId of newReelIds) {
-        processReel(reelId).catch((err) => {
-          console.error(`❌ Erro em background ao processar Reel #${reelId}:`, err);
+      const intervalMs = settings.publish_interval_minutes * 60 * 1000;
+      const lastPublishedAt = getLastPublishedAt(user.id);
+      const throttled =
+        intervalMs > 0 &&
+        !!lastPublishedAt &&
+        Date.now() - new Date(lastPublishedAt).getTime() < intervalMs;
+
+      if (settings.auto_publish && !throttled) {
+        // Processa só 1 reel agora; os demais ficam na fila para os próximos ciclos do scheduler.
+        publishingNow = true;
+        const firstReelId = newReelIds[0];
+        console.log(`📥 [Importar Manual] Publicando 1 reel (#${firstReelId}) em background; ${newReelIds.length - 1} na fila...`);
+        processReel(firstReelId).catch((err) => {
+          console.error(`❌ Erro em background ao processar Reel #${firstReelId}:`, err);
         });
+      } else {
+        console.log(
+          `📥 [Importar Manual] ${newReelIds.length} reels importados e na fila — publicação aguardando ${settings.auto_publish ? 'a trava de intervalo' : 'auto_publish ser ativado'}.`
+        );
       }
     }
 
     return NextResponse.json({
       success: true,
-      message: `Varredura concluída. ${newCount} novos reels foram importados de @${source.username}.`,
+      message: publishingNow
+        ? `Varredura concluída. ${newCount} reels importados de @${source.username}. Publicando 1 agora; os demais entram na fila (1 a cada ${settings.publish_interval_minutes} min).`
+        : `Varredura concluída. ${newCount} reels importados de @${source.username} e adicionados à fila (1 publicação a cada ${settings.publish_interval_minutes} min).`,
       data: {
         newReelsCount: newCount,
       }

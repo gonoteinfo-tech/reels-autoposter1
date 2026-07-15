@@ -205,7 +205,7 @@ export default function DashboardClient({ user }: { user: User }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h2 className="text-lg font-bold text-white">Dashboard</h2>
+            <h2 className="text-lg font-bold text-heading">Dashboard</h2>
             {schedulerStatus && (
               <div className="flex items-center gap-1.5">
                 <span
@@ -273,10 +273,9 @@ export default function DashboardClient({ user }: { user: User }) {
               animate={{ opacity: 1, y: 0 }}
               className="p-5 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 relative overflow-hidden"
               style={{
-                background: "linear-gradient(135deg, rgba(124, 58, 237, 0.12), rgba(232, 65, 127, 0.12))",
-                border: "1px solid rgba(232, 65, 127, 0.25)",
-                boxShadow: "0 8px 32px rgba(232, 65, 127, 0.04), inset 0 0 20px rgba(255, 255, 255, 0.01)",
-                backdropFilter: "blur(12px)",
+                background: "linear-gradient(135deg, var(--brand-purple), var(--brand-orange))",
+                border: "1px solid rgba(124, 58, 237, 0.35)",
+                boxShadow: "0 10px 30px rgba(124, 58, 237, 0.25)",
               }}
             >
               <div className="flex items-start gap-4 z-10">
@@ -296,7 +295,7 @@ export default function DashboardClient({ user }: { user: User }) {
                       Limite: 1 Reel
                     </span>
                   </h4>
-                  <p className="text-xs text-gray-300 max-w-2xl leading-relaxed">
+                  <p className="text-xs text-white/90 max-w-2xl leading-relaxed">
                     Você já atingiu o limite do seu plano gratuito de **1 publicação**.
                     As próximas postagens automáticas e manuais estão suspensas até que você atualize seu plano.
                   </p>
@@ -446,7 +445,7 @@ export default function DashboardClient({ user }: { user: User }) {
                   />
                 </div>
               </motion.div>
-              <h3 className="text-lg font-bold text-white mb-2">
+              <h3 className="text-lg font-bold text-heading mb-2">
                 Nenhum Reel encontrado
               </h3>
               <p

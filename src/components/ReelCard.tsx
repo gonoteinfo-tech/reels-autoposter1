@@ -188,7 +188,7 @@ export default function ReelCard({ reel, onPublish, onReprocess, onDelete }: Ree
         })()}
 
         {/* Caption */}
-        <p className="text-xs text-white truncate-2 mb-3 leading-relaxed">
+        <p className="text-xs text-heading truncate-2 mb-3 leading-relaxed">
           {reel.caption || reel.original_caption || "Sem legenda"}
         </p>
 

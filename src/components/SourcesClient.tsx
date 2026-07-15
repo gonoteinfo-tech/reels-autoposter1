@@ -140,7 +140,7 @@ export default function SourcesClient({ user }: { user: User }) {
               <Menu className="w-5 h-5" />
             </button>
             <Users className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
-            <h2 className="text-lg font-bold text-white">Fontes de Conteúdo</h2>
+            <h2 className="text-lg font-bold text-heading">Fontes de Conteúdo</h2>
             <span className="badge badge-neutral">{sources.length}</span>
           </div>
           <button
@@ -163,7 +163,7 @@ export default function SourcesClient({ user }: { user: User }) {
           >
             <RefreshCw className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: "var(--info)" }} />
             <div>
-              <p className="text-sm font-semibold text-white mb-1">
+              <p className="text-sm font-semibold text-heading mb-1">
                 Fontes de Conteúdo Multi-Plataforma
               </p>
               <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
@@ -276,7 +276,7 @@ export default function SourcesClient({ user }: { user: User }) {
               >
                 <Users className="w-10 h-10" style={{ color: "var(--text-muted)" }} />
               </div>
-              <h3 className="text-lg font-bold text-white mb-2">Nenhuma fonte cadastrada</h3>
+              <h3 className="text-lg font-bold text-heading mb-2">Nenhuma fonte cadastrada</h3>
               <p className="text-sm max-w-sm mb-4" style={{ color: "var(--text-muted)" }}>
                 Adicione perfis do Instagram, TikTok, Facebook ou YouTube para o sistema monitorar e coletar vídeos automaticamente.
               </p>
@@ -334,7 +334,7 @@ export default function SourcesClient({ user }: { user: User }) {
                     {/* Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <p className="font-semibold text-white">
+                        <p className="font-semibold text-heading">
                           @{source.username}
                         </p>
                         {source.is_active ? (
