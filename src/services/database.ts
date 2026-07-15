@@ -115,6 +115,12 @@ export function initDatabase(): void {
     }
   }
 
+  // 3c. Promover TODOS os usuários existentes para o plano 'pro'
+  const allPromoted = database.prepare("UPDATE users SET plan = 'pro' WHERE plan != 'pro'").run();
+  if (allPromoted.changes > 0) {
+    console.log(`💾 ${allPromoted.changes} usuários existentes foram promovidos para o plano 'pro'`);
+  }
+
   // 4. Migrar/Criar tabela de perfis-fonte
   const spTableExists = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='source_profiles'").get();
   if (!spTableExists) {
@@ -379,11 +385,11 @@ export function createUser(data: {
 }): User {
   const database = getDb();
   const result = database.prepare(`
-    INSERT INTO users (email, name, picture, google_id)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO users (email, name, picture, google_id, plan)
+    VALUES (?, ?, ?, ?, 'pro')
   `).run(data.email, data.name, data.picture || null, data.google_id || null);
 
-  console.log(`💾 Usuário criado: ${data.email} (ID: ${result.lastInsertRowid})`);
+  console.log(`💾 Usuário criado: ${data.email} (ID: ${result.lastInsertRowid}) com plano PRO`);
   return getUserById(Number(result.lastInsertRowid))!;
 }
 
