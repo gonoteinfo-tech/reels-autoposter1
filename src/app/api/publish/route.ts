@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import crypto from 'crypto';
 import {
   initDatabase,
   getReelById,
@@ -6,8 +7,12 @@ import {
   updateReelStage,
   getAppSettings,
   getPublishedTotalCount,
+  acquireJobLock,
+  releaseJobLock,
 } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
+import { enforceUserRateLimit } from '@/services/rate-limit';
+import { SecurityError } from '@/services/security';
 import { publishReel as publishToInstagram } from '@/services/instagram-publisher';
 import { publishReelToPage as publishToFacebook } from '@/services/facebook-publisher';
 import type { ApiResponse } from '@/types';
@@ -31,6 +36,8 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
         { status: 401 }
       );
     }
+
+    enforceUserRateLimit(user.id, 'publish', 10, 10 * 60 * 1000);
 
     const body = await request.json();
     const { reelId, targets } = body as {
@@ -72,6 +79,20 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       );
     }
 
+    if (reel.stage === 'published') {
+      return NextResponse.json(
+        { success: false, error: 'Este reel já foi publicado.' },
+        { status: 409 }
+      );
+    }
+
+    const lockKey = `reel:${reelId}`;
+    const ownerToken = crypto.randomUUID();
+    if (!acquireJobLock(lockKey, ownerToken, 30 * 60 * 1000)) {
+      return NextResponse.json({ success: false, error: 'Este reel já está sendo processado.' }, { status: 409 });
+    }
+
+    try {
     // Verificar limite do plano gratuito (máximo 1 publicação)
     if (user.plan === 'free') {
       const publishedCount = getPublishedTotalCount(user.id);
@@ -167,7 +188,13 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       success: true,
       data: result,
     });
+    } finally {
+      releaseJobLock(lockKey, ownerToken);
+    }
   } catch (error) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
     console.error('❌ Erro ao publicar reel:', error);
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },

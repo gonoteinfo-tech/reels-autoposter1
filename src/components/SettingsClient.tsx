@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import Image from "next/image";
 import { motion } from "framer-motion";
 import {
   Settings,
@@ -20,7 +21,7 @@ import {
 import { Instagram, Facebook } from "@/components/icons";
 
 import Sidebar from "@/components/Sidebar";
-import type { AppSettings, User } from "@/types";
+import type { AppSettings, FacebookPageOption, PublicAppSettings, User } from "@/types";
 
 const POSITIONS = [
   { value: "top-left", label: "Superior Esquerdo" },
@@ -39,7 +40,7 @@ const CRON_PRESETS = [
   { value: "0 0 * * *", label: "Uma vez por dia (meia-noite)" },
 ];
 
-const DEFAULT_SETTINGS: AppSettings = {
+const DEFAULT_SETTINGS: PublicAppSettings = {
   logo_position: "bottom-right",
   logo_scale: 80,
   cron_schedule: "*/30 * * * *",
@@ -51,7 +52,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   custom_caption_template: "",
   instagram_enabled: true,
   facebook_enabled: true,
-  facebook_page_access_token: "",
+  facebook_page_access_token_configured: false,
   facebook_page_id: "",
   instagram_business_account_id: "",
   facebook_page_name: "",
@@ -61,7 +62,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 export default function SettingsClient({ user }: { user: User }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<PublicAppSettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
@@ -70,7 +71,7 @@ export default function SettingsClient({ user }: { user: User }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Estados para OAuth e Seleção de Páginas
-  const [availablePages, setAvailablePages] = useState<any[]>([]);
+  const [availablePages, setAvailablePages] = useState<FacebookPageOption[]>([]);
   const [showPageSelector, setShowPageSelector] = useState(false);
   const [loadingPages, setLoadingPages] = useState(false);
 
@@ -105,17 +106,17 @@ export default function SettingsClient({ user }: { user: User }) {
   }, []);
 
   useEffect(() => {
-    fetchSettings();
+    const initialFetch = setTimeout(fetchSettings, 0);
     
     // Check if redirect returned from OAuth login
     const urlParams = new URLSearchParams(window.location.search);
     const authStatus = urlParams.get("auth");
     if (authStatus === "success") {
-      fetchPages();
+      setTimeout(fetchPages, 0);
       window.history.replaceState({}, document.title, "/dashboard/settings");
     } else if (authStatus === "error") {
       const msg = urlParams.get("message") || "Erro na autenticação";
-      setError(`Falha ao conectar com o Facebook: ${msg}`);
+      setTimeout(() => setError(`Falha ao conectar com o Facebook: ${msg}`), 0);
       window.history.replaceState({}, document.title, "/dashboard/settings");
     }
 
@@ -134,18 +135,33 @@ export default function SettingsClient({ user }: { user: User }) {
         }
       })
       .catch(() => {});
+    return () => clearTimeout(initialFetch);
   }, [fetchSettings, fetchPages, user.id]);
 
-  const handleSave = async (customSettings?: AppSettings) => {
+  const handleSave = async (customSettings?: PublicAppSettings) => {
     setSaving(true);
     setError("");
     setSaved(false);
 
     try {
+      const values = customSettings || settings;
+      const editableSettings = {
+        logo_position: values.logo_position,
+        logo_scale: values.logo_scale,
+        cron_schedule: values.cron_schedule,
+        max_reels_per_run: values.max_reels_per_run,
+        discovery_limit: values.discovery_limit,
+        discovery_interval_minutes: values.discovery_interval_minutes,
+        publish_interval_minutes: values.publish_interval_minutes,
+        auto_publish: values.auto_publish,
+        custom_caption_template: values.custom_caption_template,
+        instagram_enabled: values.instagram_enabled,
+        facebook_enabled: values.facebook_enabled,
+      };
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(customSettings || settings),
+        body: JSON.stringify(editableSettings),
       });
       const data = await res.json();
       if (data.success) {
@@ -166,8 +182,7 @@ export default function SettingsClient({ user }: { user: User }) {
 
   const handleConnectFacebook = async () => {
     try {
-      const origin = window.location.origin;
-      const res = await fetch(`/api/auth/facebook?origin=${encodeURIComponent(origin)}`);
+      const res = await fetch("/api/auth/facebook");
       const data = await res.json();
       if (data.success && data.data?.authUrl) {
         window.location.href = data.data.authUrl;
@@ -179,35 +194,35 @@ export default function SettingsClient({ user }: { user: User }) {
     }
   };
 
-  const handleDisconnectFacebook = () => {
-    const updated = {
-      ...settings,
-      facebook_page_id: "",
-      facebook_page_access_token: "",
-      facebook_page_name: "",
-      instagram_business_account_id: "",
-      instagram_username: "",
-    };
-    setSettings(updated);
-    handleSave(updated);
+  const handleDisconnectFacebook = async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/auth/facebook/pages", { method: "DELETE" });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Falha ao desconectar o Facebook");
+      setSettings({ ...DEFAULT_SETTINGS, ...data.data });
+      setAvailablePages([]);
+      setShowPageSelector(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao desconectar o Facebook");
+    }
   };
 
-  const handleSelectPage = (pageId: string) => {
-    const page = availablePages.find((p) => p.id === pageId);
-    if (!page) return;
-
-    const updated = {
-      ...settings,
-      facebook_page_id: page.id,
-      facebook_page_access_token: page.access_token,
-      facebook_page_name: page.name,
-      instagram_business_account_id: page.instagram_business_account?.id || "",
-      instagram_username: page.instagram_business_account?.username || "",
-    };
-
-    setSettings(updated);
-    setShowPageSelector(false);
-    handleSave(updated);
+  const handleSelectPage = async (pageId: string) => {
+    setError("");
+    try {
+      const res = await fetch("/api/auth/facebook/pages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageId }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "Falha ao selecionar a página");
+      setSettings({ ...DEFAULT_SETTINGS, ...data.data });
+      setShowPageSelector(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Falha ao selecionar a página");
+    }
   };
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -316,7 +331,14 @@ export default function SettingsClient({ user }: { user: User }) {
                   onClick={() => fileInputRef.current?.click()}
                 >
                   {logoPreview ? (
-                    <img src={logoPreview} alt="Logo" className="max-w-full max-h-full object-contain p-4" />
+                    <Image
+                      src={logoPreview}
+                      alt="Logo"
+                      width={640}
+                      height={360}
+                      unoptimized
+                      className="max-w-full max-h-full object-contain p-4"
+                    />
                   ) : (
                     <div className="text-center">
                       <Upload className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--text-muted)" }} />

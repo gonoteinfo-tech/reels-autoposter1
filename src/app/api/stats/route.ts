@@ -25,14 +25,14 @@ function calculateStorageUsedMb(): number {
   ];
 
   for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue;
+    if (!fs.existsSync(/* turbopackIgnore: true */ dir)) continue;
 
     try {
-      const files = fs.readdirSync(dir);
+      const files = fs.readdirSync(/* turbopackIgnore: true */ dir);
       for (const file of files) {
-        const filePath = path.join(dir, file);
+        const filePath = path.join(/* turbopackIgnore: true */ dir, file);
         try {
-          const stat = fs.statSync(filePath);
+          const stat = fs.statSync(/* turbopackIgnore: true */ filePath);
           if (stat.isFile()) {
             totalBytes += stat.size;
           }

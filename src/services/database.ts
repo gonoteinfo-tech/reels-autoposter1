@@ -1,7 +1,11 @@
+import 'server-only';
+
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import type { SourceProfile, Reel, ReelStage, AppSettings, User, Session, DashboardStats } from '@/types';
+import { deserializeSetting, serializeSetting, SENSITIVE_SETTING_KEYS } from './secrets';
 
 /** Representação do perfil-fonte no SQLite (onde is_active é armazenado como número) */
 interface DbSourceProfile extends Omit<SourceProfile, 'is_active'> {
@@ -228,9 +232,11 @@ export function initDatabase(): void {
         original_caption TEXT NOT NULL DEFAULT '',
         hashtags TEXT NOT NULL DEFAULT '',
         duration_seconds REAL NOT NULL DEFAULT 0,
+        views_count INTEGER NOT NULL DEFAULT 0,
         local_path TEXT,
         processed_path TEXT,
         r2_url TEXT,
+        direct_video_url TEXT,
         stage TEXT NOT NULL DEFAULT 'discovered',
         error_message TEXT,
         ig_post_id TEXT,
@@ -260,6 +266,7 @@ export function initDatabase(): void {
           original_caption TEXT NOT NULL DEFAULT '',
           hashtags TEXT NOT NULL DEFAULT '',
           duration_seconds REAL NOT NULL DEFAULT 0,
+          views_count INTEGER NOT NULL DEFAULT 0,
           local_path TEXT,
           processed_path TEXT,
           r2_url TEXT,
@@ -285,6 +292,12 @@ export function initDatabase(): void {
       if (!hasDirectVideoUrl) {
         database.exec("ALTER TABLE reels ADD COLUMN direct_video_url TEXT");
         console.log('💾 Campo direct_video_url adicionado à tabela reels (Apify integration)');
+      }
+
+      const hasViewsCount = reelsColumns.some(c => c.name === 'views_count');
+      if (!hasViewsCount) {
+        database.exec("ALTER TABLE reels ADD COLUMN views_count INTEGER NOT NULL DEFAULT 0");
+        console.log('💾 Campo views_count adicionado à tabela reels');
       }
     }
   }
@@ -319,6 +332,29 @@ export function initDatabase(): void {
       `);
       console.log('💾 Migração de app_settings concluída com sucesso!');
     }
+  }
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS job_locks (
+      lock_key TEXT PRIMARY KEY,
+      owner_token TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      limit_key TEXT PRIMARY KEY,
+      window_started_at INTEGER NOT NULL,
+      request_count INTEGER NOT NULL
+    );
+  `);
+
+  const sensitiveRows = database.prepare(
+    `SELECT user_id, key, value FROM app_settings WHERE key IN (${[...SENSITIVE_SETTING_KEYS].map(() => '?').join(',')})`
+  ).all(...SENSITIVE_SETTING_KEYS) as { user_id: number; key: string; value: string }[];
+  const updateSensitive = database.prepare('UPDATE app_settings SET value = ? WHERE user_id = ? AND key = ?');
+  for (const row of sensitiveRows) {
+    const protectedValue = serializeSetting(row.key, row.value);
+    if (protectedValue !== row.value) updateSensitive.run(protectedValue, row.user_id, row.key);
   }
 
   // Criar índices necessários se não existirem
@@ -441,13 +477,18 @@ export function ensureProIfListed(email: string): void {
 //  CRUD - Sessions
 // ─────────────────────────────────────────────
 
+function hashSessionId(id: string): string {
+  return crypto.createHash('sha256').update(id, 'utf8').digest('hex');
+}
+
 export function createSession(id: string, userId: number, expiresAt: Date): Session {
   const database = getDb();
   const expiresAtStr = expiresAt.toISOString();
+  const storedId = hashSessionId(id);
   database.prepare(`
     INSERT INTO sessions (id, user_id, expires_at)
     VALUES (?, ?, ?)
-  `).run(id, userId, expiresAtStr);
+  `).run(storedId, userId, expiresAtStr);
 
   return {
     id,
@@ -459,23 +500,36 @@ export function createSession(id: string, userId: number, expiresAt: Date): Sess
 
 export function getSession(id: string): (Session & { user: User }) | null {
   const database = getDb();
+  const hashedId = hashSessionId(id);
   const row = database.prepare(`
     SELECT s.*, u.email as user_email, u.name as user_name, u.picture as user_picture, u.google_id as user_google_id, u.plan as user_plan, u.created_at as user_created_at
     FROM sessions s
     JOIN users u ON s.user_id = u.id
-    WHERE s.id = ?
-  `).get(id) as any;
+    WHERE s.id = ? OR s.id = ?
+    ORDER BY CASE WHEN s.id = ? THEN 0 ELSE 1 END
+    LIMIT 1
+  `).get(hashedId, id, hashedId) as (Session & {
+    user_email: string;
+    user_name: string;
+    user_picture: string | null;
+    user_google_id: string | null;
+    user_plan: string;
+    user_created_at: string;
+  }) | undefined;
 
   if (!row) return null;
 
   const expiresAt = new Date(row.expires_at);
+  if (row.id === id && id !== hashedId) {
+    database.prepare('UPDATE sessions SET id = ? WHERE id = ?').run(hashedId, id);
+  }
   if (expiresAt < new Date()) {
     deleteSession(id);
     return null;
   }
 
   return {
-    id: row.id,
+    id,
     user_id: row.user_id,
     expires_at: row.expires_at,
     created_at: row.created_at,
@@ -493,8 +547,8 @@ export function getSession(id: string): (Session & { user: User }) | null {
 
 export function deleteSession(id: string): void {
   const database = getDb();
-  database.prepare('DELETE FROM sessions WHERE id = ?').run(id);
-  console.log(`💾 Sessão removida: ${id}`);
+  database.prepare('DELETE FROM sessions WHERE id = ? OR id = ?').run(hashSessionId(id), id);
+  console.log('💾 Sessão removida');
 }
 
 // ─────────────────────────────────────────────
@@ -757,12 +811,13 @@ export function createReel(data: {
   hashtags?: string;
   user_id: number;
   /** URL direta do vídeo fornecida pela Apify (evita cookies/scraping no download) */
+  views_count?: number;
   direct_video_url?: string;
 }): Reel {
   const database = getDb();
   const result = database.prepare(`
-    INSERT INTO reels (source_id, source_username, instagram_url, instagram_id, caption, original_caption, hashtags, user_id, direct_video_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO reels (source_id, source_username, instagram_url, instagram_id, caption, original_caption, hashtags, user_id, direct_video_url, views_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.source_id,
     data.source_username,
@@ -772,7 +827,8 @@ export function createReel(data: {
     data.original_caption || '',
     data.hashtags || '',
     data.user_id,
-    data.direct_video_url || null
+    data.direct_video_url || null,
+    Math.max(0, Math.trunc(data.views_count || 0))
   );
 
   console.log(`💾 Reel criado: ${data.instagram_url} para Usuário ${data.user_id} (ID: ${result.lastInsertRowid})`);
@@ -809,6 +865,7 @@ export function updateReel(
       | 'processed_path'
       | 'r2_url'
       | 'stage'
+      | 'views_count'
       | 'error_message'
       | 'ig_post_id'
       | 'fb_post_id'
@@ -938,7 +995,7 @@ export function getAppSettings(userId: number): AppSettings {
 
   const settings: Record<string, string> = {};
   for (const row of rows) {
-    settings[row.key] = row.value;
+    settings[row.key] = deserializeSetting(row.key, row.value);
   }
 
   // Se não houver configurações, inicializa com os valores padrão
@@ -999,9 +1056,9 @@ export function updateSetting(userId: number, key: string, value: string): void 
     INSERT INTO app_settings (user_id, key, value) 
     VALUES (?, ?, ?)
     ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
-  `).run(userId, key, value);
+  `).run(userId, key, serializeSetting(key, value));
 
-  console.log(`💾 Configuração atualizada para Usuário ${userId}: ${key} = ${value}`);
+  console.log(`💾 Configuração atualizada para Usuário ${userId}: ${key}`);
 }
 
 /**
@@ -1018,12 +1075,65 @@ export function updateSettings(userId: number, settings: Partial<AppSettings>): 
   const updateMany = database.transaction(() => {
     const entries = Object.entries(settings) as [string, unknown][];
     for (const [key, value] of entries) {
-      update.run(userId, key, String(value));
+      update.run(userId, key, serializeSetting(key, value));
     }
   });
 
   updateMany();
   console.log(`💾 Configurações do Usuário ${userId} atualizadas em lote`);
+}
+
+export function acquireJobLock(lockKey: string, ownerToken: string, ttlMs = 15 * 60 * 1000): boolean {
+  const database = getDb();
+  const now = Date.now();
+  return database.transaction(() => {
+    database.prepare('DELETE FROM job_locks WHERE expires_at <= ?').run(now);
+    try {
+      database.prepare(
+        'INSERT INTO job_locks (lock_key, owner_token, expires_at) VALUES (?, ?, ?)'
+      ).run(lockKey, ownerToken, now + ttlMs);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) return false;
+      throw error;
+    }
+  })();
+}
+
+export function releaseJobLock(lockKey: string, ownerToken: string): void {
+  getDb().prepare('DELETE FROM job_locks WHERE lock_key = ? AND owner_token = ?').run(lockKey, ownerToken);
+}
+
+export function consumeRateLimit(limitKey: string, maxRequests: number, windowMs: number): {
+  allowed: boolean;
+  retryAfterSeconds: number;
+} {
+  const database = getDb();
+  const now = Date.now();
+  return database.transaction(() => {
+    const row = database.prepare(
+      'SELECT window_started_at, request_count FROM rate_limits WHERE limit_key = ?'
+    ).get(limitKey) as { window_started_at: number; request_count: number } | undefined;
+
+    if (!row || now - row.window_started_at >= windowMs) {
+      database.prepare(`
+        INSERT INTO rate_limits (limit_key, window_started_at, request_count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(limit_key) DO UPDATE SET window_started_at = excluded.window_started_at, request_count = 1
+      `).run(limitKey, now);
+      return { allowed: true, retryAfterSeconds: 0 };
+    }
+
+    if (row.request_count >= maxRequests) {
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil((windowMs - (now - row.window_started_at)) / 1000)),
+      };
+    }
+
+    database.prepare('UPDATE rate_limits SET request_count = request_count + 1 WHERE limit_key = ?').run(limitKey);
+    return { allowed: true, retryAfterSeconds: 0 };
+  })();
 }
 
 /**
@@ -1046,7 +1156,11 @@ export function getDashboardStats(userId: number): DashboardStats {
       SUM(CASE WHEN stage = 'published' THEN 1 ELSE 0 END) as published_total,
       SUM(CASE WHEN stage = 'published' AND date(published_at) = date('now') THEN 1 ELSE 0 END) as published_today,
       SUM(CASE WHEN stage = 'error' AND date(updated_at) = date('now') THEN 1 ELSE 0 END) as errors_today,
-      SUM(CASE WHEN stage NOT IN ('published', 'error') THEN 1 ELSE 0 END) as pipeline_queue
+      SUM(CASE WHEN stage NOT IN ('published', 'error') THEN 1 ELSE 0 END) as pipeline_queue,
+      COALESCE(SUM(views_count), 0) as total_views,
+      COALESCE(ROUND(AVG(CASE WHEN views_count > 0 THEN views_count END)), 0) as average_views_per_reel,
+      COALESCE(MAX(views_count), 0) as top_reel_views,
+      SUM(CASE WHEN views_count > 0 THEN 1 ELSE 0 END) as reels_with_view_data
     FROM reels
     WHERE user_id = ?
   `).get(userId) as {
@@ -1054,6 +1168,10 @@ export function getDashboardStats(userId: number): DashboardStats {
     published_total: number;
     published_today: number;
     errors_today: number;
+    total_views: number;
+    average_views_per_reel: number;
+    top_reel_views: number;
+    reels_with_view_data: number;
     pipeline_queue: number;
   } | undefined;
 
@@ -1068,7 +1186,11 @@ export function getDashboardStats(userId: number): DashboardStats {
     published_total: reelsRow?.published_total || 0,
     errors_today: reelsRow?.errors_today || 0,
     pipeline_queue: reelsRow?.pipeline_queue || 0,
-    storage_used_mb: storageUsed
+    storage_used_mb: storageUsed,
+    total_views: reelsRow?.total_views || 0,
+    average_views_per_reel: reelsRow?.average_views_per_reel || 0,
+    top_reel_views: reelsRow?.top_reel_views || 0,
+    reels_with_view_data: reelsRow?.reels_with_view_data || 0,
   };
 }
 

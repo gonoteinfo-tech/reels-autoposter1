@@ -3,6 +3,8 @@ import { getReelById, updateReel } from '@/services/database';
 import { processReel } from '@/services/pipeline';
 import { getLoggedInUser } from '@/services/auth';
 import fs from 'fs';
+import { enforceUserRateLimit } from '@/services/rate-limit';
+import { SecurityError } from '@/services/security';
 
 /**
  * POST /api/reels/reprocess
@@ -17,6 +19,8 @@ export async function POST(request: Request) {
         { status: 401 }
       );
     }
+
+    enforceUserRateLimit(user.id, 'reprocess', 10, 10 * 60 * 1000);
 
     const body = await request.json();
     const { reelId, allFailed } = body as { reelId?: number; allFailed?: boolean };
@@ -114,6 +118,9 @@ export async function POST(request: Request) {
       }
     });
   } catch (error) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
     console.error('❌ Erro no endpoint de reprocessamento:', error);
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },

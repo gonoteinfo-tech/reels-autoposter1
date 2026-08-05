@@ -118,7 +118,7 @@ async function execYtDlpResilient(
   const runOnce = async (runArgs: string[]) => {
     try {
       return await execFileAsync(ytdlp, runArgs, options);
-    } catch (error: any) {
+    } catch (error) {
       const hasCookiesFromBrowser = runArgs.includes('--cookies-from-browser');
       const hasCookiesFile = runArgs.includes('--cookies');
 
@@ -142,11 +142,10 @@ async function execYtDlpResilient(
   };
 
   let attempt = 0;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       return await runOnce(args);
-    } catch (error: any) {
+    } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
 
       if (isRateLimitError(msg) && attempt < maxRateLimitRetries) {
@@ -173,7 +172,7 @@ function getCookiesArgs(): string[] {
   if (process.env.COOKIES_FILE) {
     const envPath = path.isAbsolute(process.env.COOKIES_FILE)
       ? process.env.COOKIES_FILE
-      : path.join(process.cwd(), process.env.COOKIES_FILE);
+      : path.join(/* turbopackIgnore: true */ process.cwd(), process.env.COOKIES_FILE);
     if (fs.existsSync(envPath)) {
       console.log(`🔑 Usando arquivo de cookies do env: ${envPath}`);
       return ['--cookies', envPath];
@@ -240,7 +239,6 @@ export async function downloadFromDirectUrl(
   const outputTemplate = path.join(outputDir, `${safeId}.%(ext)s`);
 
   const args = [
-    '--no-check-certificates',
     '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
     '--merge-output-format', 'mp4',
     '--output', outputTemplate,
@@ -303,7 +301,6 @@ export async function downloadReel(
 
   // Extrair metadados primeiro (JSON)
   const metadataArgs = [
-    '--no-check-certificates',
     '--dump-json',
     '--no-download',
     ...getCookiesArgs(),
@@ -343,7 +340,6 @@ export async function downloadReel(
 
   // Baixar o vídeo em mp4
   const downloadArgs = [
-    '--no-check-certificates',
     '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
     '--merge-output-format', 'mp4',
     '--output', outputTemplate,
@@ -488,7 +484,6 @@ async function discoverReelsYtDlp(
   }
 
   const args = [
-    '--no-check-certificates',
     '--flat-playlist',
     '--dump-json',
     '--playlist-items', `1:${limit}`,

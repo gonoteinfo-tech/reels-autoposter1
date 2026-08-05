@@ -1,94 +1,58 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
+import fs from 'fs/promises';
 import path from 'path';
+import sharp from 'sharp';
 import { getLoggedInUser } from '@/services/auth';
+import { enforceUserRateLimit } from '@/services/rate-limit';
+import { SecurityError } from '@/services/security';
 import type { ApiResponse } from '@/types';
 
-/** Tipos MIME permitidos para o logo */
-const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-
-/** Tamanho máximo do arquivo: 5MB */
+const ALLOWED_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const ALLOWED_FORMATS = new Set(['png', 'jpeg', 'webp']);
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
-/**
- * POST /api/upload-logo
- * Faz upload de um arquivo de logo específico para o usuário autenticado.
- */
 export async function POST(request: Request): Promise<NextResponse<ApiResponse>> {
   try {
     const user = await getLoggedInUser();
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
-      );
+    if (!user) return NextResponse.json({ success: false, error: 'Não autorizado.' }, { status: 401 });
+    enforceUserRateLimit(user.id, 'logo-upload', 10, 60 * 60 * 1000);
+
+    if (!(request.headers.get('content-type') || '').includes('multipart/form-data')) {
+      return NextResponse.json({ success: false, error: 'Content-Type deve ser multipart/form-data.' }, { status: 400 });
     }
 
-    const contentType = request.headers.get('content-type') || '';
-    if (!contentType.includes('multipart/form-data')) {
-      return NextResponse.json(
-        { success: false, error: 'Content-Type deve ser multipart/form-data' },
-        { status: 400 }
-      );
+    const file = (await request.formData()).get('logo');
+    if (!(file instanceof File)) {
+      return NextResponse.json({ success: false, error: 'Envie um arquivo no campo "logo".' }, { status: 400 });
+    }
+    if (!ALLOWED_MIME_TYPES.has(file.type) || file.size <= 0 || file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ success: false, error: 'Use uma imagem PNG, JPEG ou WebP de até 5 MB.' }, { status: 400 });
     }
 
-    const formData = await request.formData();
-    const file = formData.get('logo') as File | null;
-
-    if (!file) {
-      return NextResponse.json(
-        { success: false, error: 'O campo "logo" é obrigatório. Envie um arquivo de imagem.' },
-        { status: 400 }
-      );
+    const input = Buffer.from(await file.arrayBuffer());
+    const image = sharp(input, { failOn: 'error', limitInputPixels: 40_000_000, animated: false });
+    const metadata = await image.metadata();
+    if (!metadata.format || !ALLOWED_FORMATS.has(metadata.format) || !metadata.width || !metadata.height) {
+      return NextResponse.json({ success: false, error: 'O conteúdo do arquivo não é uma imagem válida.' }, { status: 400 });
     }
 
-    // Validar tipo do arquivo
-    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Tipo de arquivo não suportado: ${file.type}. Use PNG, JPEG ou WebP.`,
-        },
-        { status: 400 }
-      );
-    }
+    const output = await image
+      .rotate()
+      .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+      .png({ compressionLevel: 9 })
+      .toBuffer();
 
-    // Validar tamanho do arquivo
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Arquivo muito grande (${(file.size / 1024 / 1024).toFixed(1)}MB). Máximo permitido: 5MB.`,
-        },
-        { status: 400 }
-      );
-    }
-
-    // Criar diretório de logos se não existir
     const logosDir = path.join(process.cwd(), 'public', 'logos');
-    if (!fs.existsSync(logosDir)) {
-      fs.mkdirSync(logosDir, { recursive: true });
-      console.log('📁 Diretório public/logos/ criado');
-    }
-
-    // Converter o File para Buffer e salvar com o ID do usuário
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    await fs.mkdir(logosDir, { recursive: true });
     const filename = `logo_${user.id}.png`;
-    const logoPath = path.join(logosDir, filename);
+    await fs.writeFile(path.join(logosDir, filename), output, { flag: 'w' });
 
-    fs.writeFileSync(logoPath, buffer);
-    console.log(`🎨 Logo salvo para o Usuário ${user.id} em: ${logoPath} (${(file.size / 1024).toFixed(1)}KB)`);
-
-    return NextResponse.json({
-      success: true,
-      data: { path: `/logos/${filename}` },
-    });
+    return NextResponse.json({ success: true, data: { path: `/logos/${filename}` } });
   } catch (error) {
-    console.error('❌ Erro ao fazer upload do logo:', error);
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
-    );
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
+    console.error('Erro ao fazer upload do logo:', error);
+    return NextResponse.json({ success: false, error: 'Não foi possível processar a imagem.' }, { status: 400 });
   }
 }

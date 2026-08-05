@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import type { PipelineResult, ReelStage, User } from '@/types';
 import {
   initDatabase,
@@ -15,6 +16,9 @@ import {
   getAppSettings,
   getAllUsers,
   getUserById,
+  getPublishedTotalCount,
+  acquireJobLock,
+  releaseJobLock,
   getLastPublishedAt,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, randomSleep } from './instagram-downloader';
@@ -34,7 +38,7 @@ const PROCESSED_DIR = path.join(process.cwd(), 'data', 'processed');
  */
 function ensureDirectories(): void {
   for (const dir of [DOWNLOADS_DIR, PROCESSED_DIR]) {
-    if (!fs.existsSync(dir)) {
+    if (!fs.existsSync(/* turbopackIgnore: true */ dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
@@ -79,7 +83,7 @@ async function measureStage(
  * @param reelId ID do reel no banco de dados
  * @returns Array de resultados para cada etapa executada
  */
-export async function processReel(reelId: number): Promise<PipelineResult[]> {
+async function processReelUnlocked(reelId: number): Promise<PipelineResult[]> {
   console.log(`\n🔄 ===== Processando Reel #${reelId} =====`);
   const results: PipelineResult[] = [];
 
@@ -120,6 +124,10 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
           const apifyInfo = await fetchSingleReelApify(reel!.instagram_url);
           if (apifyInfo?.videoUrl) {
             directUrl = apifyInfo.videoUrl;
+            updateReel(reelId, {
+              views_count: apifyInfo.viewsCount,
+            });
+
             // Guardar a legenda da FONTE em original_caption (caption fica vazio p/ a IA reescrever)
             if (!reel!.original_caption && apifyInfo.caption) {
               updateReel(reelId, {
@@ -258,7 +266,6 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
     // Verificar limite do plano gratuito
     const user = getUserById(reel.user_id);
     if (user && user.plan === 'free') {
-      const { getPublishedTotalCount } = require('./database');
       const publishedCount = getPublishedTotalCount(reel.user_id);
       if (publishedCount >= 1) {
         const errorMsg = "Limite do plano gratuito atingido (máximo 1 publicação). Por favor, atualize seu plano.";
@@ -344,6 +351,28 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
   return results;
 }
 
+export async function processReel(reelId: number): Promise<PipelineResult[]> {
+  const ownerToken = crypto.randomUUID();
+  const lockKey = `reel:${reelId}`;
+  if (!acquireJobLock(lockKey, ownerToken, 45 * 60 * 1000)) {
+    return [
+      {
+        reel_id: reelId,
+        stage: 'error',
+        success: false,
+        message: `O Reel #${reelId} já está sendo processado.`,
+        duration_ms: 0,
+      },
+    ];
+  }
+
+  try {
+    return await processReelUnlocked(reelId);
+  } finally {
+    releaseJobLock(lockKey, ownerToken);
+  }
+}
+
 /**
  * Executa o pipeline para um usuário específico.
  */
@@ -377,12 +406,12 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
             console.log(`📥 [Usuário #${user.id}] @${source.username}: Descoberta pulada (última há ${diffMinutes.toFixed(1)} min, intervalo: ${settings.discovery_interval_minutes} min)`);
             continue;
           }
-        } catch (err) {
+        } catch {
           // Prossegue se houver erro ao converter a data
         }
       }
 
-      const platform = (source as any).platform || 'instagram';
+      const platform = source.platform || 'instagram';
 
       try {
         console.log(`📥 [Usuário #${user.id}] Descobrindo de ${platform}: @${source.username}...`);
@@ -398,7 +427,12 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
             const reelUrl = apifyReel.url;
             const existing = getReelByUrl(reelUrl, user.id)
               || (apifyReel.id ? getReelByInstagramId(apifyReel.id, user.id) : null);
-            if (existing) continue;
+            if (existing) {
+              updateReel(existing.id, {
+                views_count: apifyReel.viewsCount,
+              }, user.id);
+              continue;
+            }
 
             // Criar registro no banco com a URL direta do vídeo embutida no campo caption
             // (usada pelo pipeline de download para evitar cookies)
@@ -414,6 +448,7 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
               user_id: user.id,
               // Campo extra para o pipeline de download usar URL direta
               direct_video_url: apifyReel.videoUrl,
+              views_count: apifyReel.viewsCount,
             });
 
             newCount++;

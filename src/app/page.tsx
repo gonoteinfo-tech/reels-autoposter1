@@ -4,13 +4,10 @@ import {
   Zap, 
   Shield, 
   Play, 
-  Clock, 
   Sparkles, 
   Layers, 
   ArrowRight, 
   CheckCircle2, 
-  HelpCircle, 
-  Flame, 
   TrendingUp, 
   Scissors,
   Check,
@@ -249,7 +246,7 @@ export default async function LandingPage(props: PageProps) {
             </div>
             <h3 className="text-lg font-bold text-white">Agendamento & Fila</h3>
             <p className="text-sm text-gray-400">
-              Fila inteligente de publicação. Novos vídeos entram na fila como "Descobertos" e são processados um a um a cada ciclo de scheduler.
+              Fila inteligente de publicação. Novos vídeos entram na fila como &quot;Descobertos&quot; e são processados um a um a cada ciclo de scheduler.
             </p>
           </div>
 
