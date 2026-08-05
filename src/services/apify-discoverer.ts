@@ -1,5 +1,4 @@
 import { ApifyClient } from 'apify-client';
-import path from 'path';
 
 /** Informações de um reel descoberto via Apify */
 export interface ApifyReelInfo {
@@ -13,6 +12,30 @@ export interface ApifyReelInfo {
   viewsCount: number;
   commentsCount: number;
   ownerUsername: string;
+}
+
+interface ApifyRawItem {
+  id?: string;
+  shortCode?: string;
+  shortcode?: string;
+  url?: string;
+  videoUrl?: string;
+  video_url?: string;
+  displayUrl?: string;
+  videoPlaybackUrl?: string;
+  type?: string;
+  isVideo?: boolean;
+  caption?: string;
+  text?: string;
+  timestamp?: string;
+  takenAtTimestamp?: string;
+  likesCount?: number;
+  likeCount?: number;
+  videoViewCount?: number;
+  viewsCount?: number;
+  commentsCount?: number;
+  commentCount?: number;
+  ownerUsername?: string;
 }
 
 /** Verifica se a integração Apify está configurada */
@@ -77,7 +100,7 @@ export async function discoverReelsApify(
     // Mapear os itens retornados pela Apify para nosso formato
     const reels: ApifyReelInfo[] = [];
 
-    for (const item of items as Record<string, any>[]) {
+    for (const item of items as ApifyRawItem[]) {
       // Extrair URL do vídeo — a Apify retorna em diferentes campos dependendo do actor
       const videoUrl =
         item.videoUrl ||
@@ -120,7 +143,7 @@ export async function discoverReelsApify(
 
     console.log(`🤖 [Apify] ${reels.length} reels com vídeo encontrados para @${username}`);
     return reels;
-  } catch (error: any) {
+  } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
 
     if (msg.includes('not found') || msg.includes('does not exist')) {
@@ -150,7 +173,7 @@ export async function testApifyConnection(): Promise<{ ok: boolean; user?: strin
     const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
     const me = await client.user('me').get();
     return { ok: true, user: me?.username || 'desconhecido' };
-  } catch (error: any) {
+  } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes('Unauthorized') || msg.includes('Invalid token') || msg.includes('401')) {
       return { ok: false, error: 'Token inválido. Verifique seu APIFY_TOKEN.' };
@@ -215,7 +238,7 @@ export async function fetchSingleReelApify(
       return null;
     }
 
-    const item = items[0] as Record<string, any>;
+    const item = items[0] as ApifyRawItem;
 
     // Extrair URL do vídeo
     const videoUrl =
@@ -248,7 +271,7 @@ export async function fetchSingleReelApify(
       commentsCount: item.commentsCount || 0,
       ownerUsername: item.ownerUsername || '',
     };
-  } catch (error: any) {
+  } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.warn(`⚠️ [Apify] Falha ao buscar reel individual (${cleanUrl}): ${msg}`);
     // Retornar null para que o pipeline use o fallback (yt-dlp)

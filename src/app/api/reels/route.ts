@@ -10,6 +10,8 @@ import {
   deleteReel,
 } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
+import { deleteVideoByPublicUrl } from '@/services/storage';
+import { toPublicReel } from '@/services/public-reel';
 import { extractVideoId } from '@/services/instagram-downloader';
 import fs from 'fs';
 import type { Reel, ReelStage, ApiResponse } from '@/types';
@@ -71,11 +73,12 @@ export async function GET(request: Request): Promise<NextResponse<ApiResponse>> 
         `SELECT * FROM reels ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`
       )
       .all(...params, limit, offset) as Reel[];
+    const publicReels = reels.map(toPublicReel);
 
     return NextResponse.json({
       success: true,
       data: {
-        reels,
+        reels: publicReels,
         total,
         page,
         totalPages,
@@ -175,7 +178,7 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
     });
 
     return NextResponse.json(
-      { success: true, data: { reel } },
+      { success: true, data: { reel: toPublicReel(reel) } },
       { status: 201 }
     );
   } catch (error) {
@@ -220,6 +223,10 @@ export async function DELETE(request: Request): Promise<NextResponse<ApiResponse
         { success: false, error: 'Reel não encontrado ou não pertence a você' },
         { status: 404 }
       );
+    }
+
+    if (reel.r2_url) {
+      await deleteVideoByPublicUrl(reel.r2_url);
     }
 
     // Remover os arquivos locais associados

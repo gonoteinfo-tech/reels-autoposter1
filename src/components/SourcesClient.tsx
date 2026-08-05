@@ -189,7 +189,7 @@ export default function SourcesClient({ user }: { user: User }) {
                       <label className="label">Plataforma</label>
                       <select
                         value={platform}
-                        onChange={(e) => setPlatform(e.target.value as any)}
+                        onChange={(e) => setPlatform(e.target.value as NonNullable<SourceProfile['platform']>)}
                         className="input"
                         style={{ background: "var(--surface-2)", color: "white" }}
                       >

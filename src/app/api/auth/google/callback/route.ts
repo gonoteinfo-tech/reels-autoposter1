@@ -4,145 +4,118 @@ import axios from 'axios';
 import crypto from 'crypto';
 import {
   getUserByEmail,
+  getUserByGoogleId,
   updateUserGoogleId,
   getUserById,
   createUser,
   createSession,
-  ensureProIfListed
+  ensureProIfListed,
 } from '@/services/database';
+import { appUrl, constantTimeEqual, isSecureRequest } from '@/services/security';
 
 export const dynamic = 'force-dynamic';
+
+interface GoogleTokenResponse {
+  access_token?: string;
+}
+
+interface GoogleProfile {
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+  picture?: string;
+  sub?: string;
+}
+
+function homeRedirect(request: Request, error?: string): NextResponse {
+  const suffix = error ? `?error=${encodeURIComponent(error)}` : '';
+  return NextResponse.redirect(appUrl(request, `/${suffix}`));
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
-  const error = searchParams.get('error');
-  const errorDescription = searchParams.get('error_description');
   const state = searchParams.get('state');
 
-  if (error || !code) {
-    console.error('❌ Erro no retorno do Google OAuth:', error, errorDescription);
-    const details = errorDescription || error || 'Código de autorização ausente';
-    return NextResponse.redirect(new URL(`/?error=oauth_failed&details=${encodeURIComponent(details)}`, request.url));
-  }
-
-  // Validar o token "state" anti-CSRF gravado em /api/auth/google
   const cookieStore = await cookies();
-  const expectedState = cookieStore.get('oauth_state')?.value;
-  cookieStore.delete('oauth_state'); // uso único
-  if (!expectedState || !state || state !== expectedState) {
-    console.error('❌ State OAuth inválido ou ausente (possível CSRF)');
-    return NextResponse.redirect(new URL('/?error=invalid_state', request.url));
+  const expectedState = cookieStore.get('google_oauth_state')?.value;
+  cookieStore.delete('google_oauth_state');
+  if (!expectedState || !state || !constantTimeEqual(expectedState, state)) {
+    console.error('State OAuth do Google inválido ou ausente.');
+    return homeRedirect(request, 'invalid_state');
   }
+  if (searchParams.get('error') || !code) return homeRedirect(request, 'oauth_failed');
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret) {
-    console.error('❌ Credenciais do Google OAuth ausentes no servidor');
-    return NextResponse.redirect(
-      new URL('/?error=server_configuration&details=GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET nao configurado no .env', request.url)
-    );
-  }
-
-  // Detectar protocolo
-  const host = request.headers.get('host') || 'localhost:3000';
-  let proto = request.headers.get('x-forwarded-proto') || (request.url.startsWith('https:') ? 'https' : '');
-  if (!proto) {
-    const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('192.168.') || host.startsWith('10.');
-    proto = isLocal ? 'http' : 'https';
-  }
-  const isSecure = proto === 'https';
+  if (!clientId || !clientSecret) return homeRedirect(request, 'server_configuration');
 
   try {
-    const appUrl = process.env.APP_URL;
-    let redirectUri;
-    if (appUrl) {
-      redirectUri = `${appUrl.replace(/\/$/, '')}/api/auth/google/callback`;
-    } else {
-      redirectUri = `${proto}://${host}/api/auth/google/callback`;
+    const tokenResponse = await axios.post<GoogleTokenResponse>(
+      'https://oauth2.googleapis.com/token',
+      new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: appUrl(request, '/api/auth/google/callback').toString(),
+        grant_type: 'authorization_code',
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+    const accessToken = tokenResponse.data.access_token;
+    if (!accessToken) throw new Error('Google não retornou o token de acesso.');
+
+    const profileResponse = await axios.get<GoogleProfile>(
+      'https://openidconnect.googleapis.com/v1/userinfo',
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const profile = profileResponse.data;
+    if (!profile.email || !profile.email_verified || !profile.sub) {
+      throw new Error('A conta Google não retornou um e-mail verificado.');
     }
 
-    // 1. Trocar código por tokens
-    const response = await axios.post('https://oauth2.googleapis.com/token', {
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: 'authorization_code'
-    });
-
-    const { id_token } = response.data;
-    if (!id_token) {
-      throw new Error('id_token não foi retornado pelo Google');
-    }
-
-    // 2. Decodificar JWT do id_token sem verificação criptográfica externa
-    const payloadPart = id_token.split('.')[1];
-    if (!payloadPart) {
-      throw new Error('id_token JWT inválido');
-    }
-
-    const payloadJson = Buffer.from(payloadPart, 'base64').toString('utf8');
-    const googleProfile = JSON.parse(payloadJson) as {
-      email: string;
-      name: string;
-      picture?: string;
-      sub: string; // Google ID
-    };
-
-    if (!googleProfile.email) {
-      throw new Error('E-mail não retornado pelo escopo do Google');
-    }
-
-    // 3. Obter ou Criar Usuário
-    let user = getUserByEmail(googleProfile.email);
-
-    if (user) {
-      // Usuário existente. Se for o admin ou usuário com e-mail cadastrado, mas sem google_id ainda, vincula.
-      if (!user.google_id) {
-        updateUserGoogleId(user.id, googleProfile.sub);
-        user = getUserById(user.id)!;
+    const email = profile.email.trim().toLowerCase();
+    let user = getUserByGoogleId(profile.sub);
+    if (!user) {
+      user = getUserByEmail(email);
+      if (user?.google_id && user.google_id !== profile.sub) {
+        throw new Error('Esta conta já está vinculada a outra identidade Google.');
       }
-    } else {
-      // Novo usuário
+      if (user && !user.google_id) {
+        updateUserGoogleId(user.id, profile.sub);
+        user = getUserById(user.id);
+      }
+    }
+    if (!user) {
       user = createUser({
-        email: googleProfile.email,
-        name: googleProfile.name,
-        picture: googleProfile.picture || null,
-        google_id: googleProfile.sub
+        email,
+        name: profile.name || email,
+        picture: profile.picture || null,
+        google_id: profile.sub,
       });
     }
 
-    // Promover a 'pro' se o e-mail estiver na lista de membros pro (ADMIN_EMAIL + PRO_EMAILS)
     ensureProIfListed(user.email);
-    user = getUserById(user.id)!;
+    user = getUserById(user.id) ?? user;
 
-    // 4. Criar Sessão
     const sessionId = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // Expira em 7 dias
-
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     createSession(sessionId, user.id, expiresAt);
-
-    // 5. Configurar Cookie
     cookieStore.set('session', sessionId, {
       httpOnly: true,
-      secure: isSecure,
+      secure: isSecureRequest(request),
       sameSite: 'lax',
       path: '/',
-      maxAge: 60 * 60 * 24 * 7 // 7 dias
+      maxAge: 7 * 24 * 60 * 60,
     });
 
-    console.log(`🔑 Login efetuado com sucesso para: ${user.email} (ID: ${user.id})`);
-
-    // Redirecionar para o painel
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  } catch (err: any) {
-    console.error('❌ Falha ao processar callback de autenticação:', err.response?.data || err.message || err);
-    const errorDetails = err.response?.data?.error_description || err.response?.data?.error || err.message || 'Erro desconhecido no processamento do token';
-    return NextResponse.redirect(
-      new URL(`/?error=callback_error&details=${encodeURIComponent(errorDetails)}`, request.url)
-    );
+    return NextResponse.redirect(appUrl(request, '/dashboard'));
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      console.error('Falha no callback OAuth do Google:', error.response?.status);
+    } else {
+      console.error('Falha no callback OAuth do Google:', error);
+    }
+    return homeRedirect(request, 'callback_error');
   }
 }

@@ -1,3 +1,5 @@
+import 'server-only';
+
 import {
   S3Client,
   PutObjectCommand,
@@ -73,7 +75,6 @@ export async function uploadVideo(filePath: string, key: string): Promise<string
   const bucket = getBucketName();
   const publicUrl = getPublicUrl();
 
-  const fileContent = fs.readFileSync(filePath);
   const contentType = getMimeType(filePath);
   const stats = fs.statSync(filePath);
 
@@ -86,7 +87,7 @@ export async function uploadVideo(filePath: string, key: string): Promise<string
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
-        Body: fileContent,
+        Body: fs.createReadStream(filePath),
         ContentType: contentType,
         ContentLength: stats.size,
         Metadata: {
@@ -129,6 +130,22 @@ export async function deleteVideo(key: string): Promise<void> {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(`❌ Falha ao remover do R2: ${msg}`);
   }
+}
+
+export async function deleteVideoByPublicUrl(publicVideoUrl: string): Promise<void> {
+  const base = new URL(`${getPublicUrl()}/`);
+  const target = new URL(publicVideoUrl);
+  if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname)) {
+    throw new Error('A URL do vídeo não pertence ao armazenamento R2 configurado.');
+  }
+
+  const encodedKey = target.pathname.slice(base.pathname.length);
+  const key = decodeURIComponent(encodedKey);
+  if (!key || key.includes('..')) {
+    throw new Error('A chave do objeto R2 é inválida.');
+  }
+
+  await deleteVideo(key);
 }
 
 /**

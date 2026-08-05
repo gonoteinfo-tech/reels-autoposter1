@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import {
   LayoutDashboard,
   Settings,
@@ -142,10 +143,13 @@ export default function Sidebar({
           >
             <div className="flex items-center gap-2.5 min-w-0 flex-1">
               {user.picture ? (
-                <img 
+                <Image
                   src={user.picture} 
                   alt={user.name} 
                   className="w-7 h-7 rounded-full border border-[var(--surface-border)] flex-shrink-0" 
+                  width={28}
+                  height={28}
+                  unoptimized
                 />
               ) : (
                 <div 
@@ -173,14 +177,14 @@ export default function Sidebar({
                 </div>
               )}
             </div>
-            <Link 
-              href="/api/auth/logout" 
+            <form action="/api/auth/logout" method="post">
+              <button
               className="p-1.5 rounded-lg hover:bg-[var(--surface-2)] text-red-400 hover:text-red-300 transition-colors flex-shrink-0" 
               title="Sair"
-              prefetch={false}
             >
               <LogOut className="w-3.5 h-3.5" />
-            </Link>
+              </button>
+            </form>
           </div>
         )}
 

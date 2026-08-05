@@ -4,6 +4,7 @@ import {
   getSourceById,
   getReelByUrl,
   getReelByInstagramId,
+  updateReel,
   createReel,
   updateSourceLastChecked,
   getAppSettings,
@@ -11,6 +12,8 @@ import {
 } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
 import { discoverReels, extractVideoId } from '@/services/instagram-downloader';
+import { enforceUserRateLimit } from '@/services/rate-limit';
+import { SecurityError } from '@/services/security';
 import { processReel } from '@/services/pipeline';
 import { isApifyConfigured, discoverReelsApify } from '@/services/apify-discoverer';
 
@@ -34,6 +37,8 @@ export async function POST(request: Request) {
         { status: 401 }
       );
     }
+
+    enforceUserRateLimit(user.id, 'source-import', 5, 10 * 60 * 1000);
 
     const body = await request.json();
     const { sourceId } = body as { sourceId?: number };
@@ -66,7 +71,7 @@ export async function POST(request: Request) {
 
     console.log(`📥 [Importar Manual] Varrendo @${source.username} para Usuário #${user.id} (puxar até: ${discoveryLimit})...`);
 
-    const platform = (source as any).platform || 'instagram';
+    const platform = source.platform || 'instagram';
     let newCount = 0;
     const newReelIds: number[] = [];
 
@@ -79,7 +84,12 @@ export async function POST(request: Request) {
         const url = apifyReel.url;
         const existing = getReelByUrl(url, user.id)
           || (apifyReel.id ? getReelByInstagramId(apifyReel.id, user.id) : null);
-        if (existing) continue;
+        if (existing) {
+          updateReel(existing.id, {
+            views_count: apifyReel.viewsCount,
+          }, user.id);
+          continue;
+        }
 
         const newReel = createReel({
           source_id: source.id,
@@ -92,6 +102,7 @@ export async function POST(request: Request) {
           hashtags: apifyReel.hashtags.join(' '),
           user_id: user.id,
           direct_video_url: apifyReel.videoUrl, // Salvar URL direta para evitar downloads bloqueados na VPS
+          views_count: apifyReel.viewsCount,
         });
 
         newReelIds.push(newReel.id);
@@ -168,6 +179,9 @@ export async function POST(request: Request) {
       }
     });
   } catch (error) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
     console.error('❌ Erro no endpoint de importação manual:', error);
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },

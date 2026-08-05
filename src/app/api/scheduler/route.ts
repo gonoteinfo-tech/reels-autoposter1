@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { initDatabase } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
-import { getSchedulerStatus, startScheduler, stopScheduler, runNow, isSchedulerActive } from '@/services/scheduler';
+import { getSchedulerStatus, startScheduler, stopScheduler, runNow } from '@/services/scheduler';
 import type { ApiResponse } from '@/types';
+import { enforceUserRateLimit } from '@/services/rate-limit';
+import { SecurityError } from '@/services/security';
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -22,16 +24,6 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
         { success: false, error: 'Não autorizado. Faça login primeiro.' },
         { status: 401 }
       );
-    }
-
-    // Auto-iniciar scheduler se o cron job não estiver registrado
-    if (!isSchedulerActive()) {
-      try {
-        startScheduler();
-        console.log(`⏰ Scheduler auto-iniciado em segundo plano`);
-      } catch (cronError) {
-        console.error('❌ Falha ao auto-iniciar o scheduler:', cronError);
-      }
     }
 
     // Obter status atualizado para o usuário logado
@@ -64,6 +56,8 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
         { status: 401 }
       );
     }
+    enforceUserRateLimit(user.id, 'scheduler', 10, 10 * 60 * 1000);
+
 
     const body = await request.json();
     const { action } = body as { action?: string };
@@ -134,6 +128,9 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
         );
     }
   } catch (error) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
     console.error('❌ Erro ao controlar scheduler:', error);
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },

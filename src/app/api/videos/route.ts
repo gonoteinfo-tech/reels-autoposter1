@@ -1,104 +1,82 @@
 import { NextResponse } from 'next/server';
-import { getReelById } from '@/services/database';
 import fs from 'fs';
 import { Readable } from 'stream';
+import { getLoggedInUser } from '@/services/auth';
+import { getReelById } from '@/services/database';
 
-/**
- * GET /api/videos
- * Stream de vídeo local para permitir a visualização no dashboard.
- * Suporta Range Requests para permitir seek/scrubbing nos players HTML5.
- *
- * Query params:
- *   - id: ID do Reel
- *   - type: 'local' (vídeo original baixado) ou 'processed' (vídeo com logo)
- */
+const VIDEO_HEADERS = {
+  'Accept-Ranges': 'bytes',
+  'Cache-Control': 'private, no-store',
+  'Content-Disposition': 'inline',
+  'Content-Type': 'video/mp4',
+  'X-Content-Type-Options': 'nosniff',
+};
+
 export async function GET(request: Request) {
   try {
+    const user = await getLoggedInUser();
+    if (!user) return NextResponse.json({ success: false, error: 'Não autorizado.' }, { status: 401 });
+
     const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
+    const rawId = searchParams.get('id');
+    const id = rawId ? Number(rawId) : Number.NaN;
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return NextResponse.json({ success: false, error: 'ID do reel inválido.' }, { status: 400 });
+    }
+
+    const reel = getReelById(id, user.id);
+    if (!reel) return NextResponse.json({ success: false, error: 'Reel não encontrado.' }, { status: 404 });
+
     const type = searchParams.get('type');
-
-    if (!id) {
-      return NextResponse.json(
-        { success: false, error: 'O ID do reel é obrigatório' },
-        { status: 400 }
-      );
-    }
-
-    const reel = getReelById(Number(id));
-    if (!reel) {
-      return NextResponse.json(
-        { success: false, error: 'Reel não encontrado no banco de dados' },
-        { status: 404 }
-      );
-    }
-
-    // Decidir qual caminho de arquivo usar
-    let filePath = '';
-    if (type === 'processed') {
-      filePath = reel.processed_path || '';
-    } else if (type === 'local') {
-      filePath = reel.local_path || '';
-    } else {
-      // Priorizar o vídeo processado, depois o local
-      filePath = reel.processed_path || reel.local_path || '';
-    }
+    const filePath = type === 'processed'
+      ? reel.processed_path
+      : type === 'local'
+        ? reel.local_path
+        : reel.processed_path || reel.local_path;
 
     if (!filePath || !fs.existsSync(filePath)) {
-      return NextResponse.json(
-        { success: false, error: 'Arquivo de vídeo não encontrado no servidor' },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, error: 'Arquivo de vídeo não encontrado.' }, { status: 404 });
     }
 
     const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
+    if (!stat.isFile()) return NextResponse.json({ success: false, error: 'Vídeo inválido.' }, { status: 404 });
+
     const range = request.headers.get('range');
-
-    if (range) {
-      // Processar requisição parcial (HTTP 206 Partial Content)
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-      if (start >= fileSize || end >= fileSize) {
-        return new NextResponse('Range Not Satisfiable', {
-          status: 416,
-          headers: { 'Content-Range': `bytes */${fileSize}` }
-        });
-      }
-
-      const chunkSize = end - start + 1;
-      const fileStream = fs.createReadStream(filePath, { start, end });
-      const webStream = Readable.toWeb(fileStream);
-
-      return new NextResponse(webStream as any, {
-        status: 206,
-        headers: {
-          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-          'Accept-Ranges': 'bytes',
-          'Content-Length': String(chunkSize),
-          'Content-Type': 'video/mp4',
-        }
-      });
-    } else {
-      // Processar stream completo (HTTP 200)
-      const fileStream = fs.createReadStream(filePath);
-      const webStream = Readable.toWeb(fileStream);
-
-      return new NextResponse(webStream as any, {
-        headers: {
-          'Content-Length': String(fileSize),
-          'Content-Type': 'video/mp4',
-          'Accept-Ranges': 'bytes',
-        }
+    if (!range) {
+      const stream = Readable.toWeb(fs.createReadStream(filePath)) as ReadableStream<Uint8Array>;
+      return new NextResponse(stream, {
+        headers: { ...VIDEO_HEADERS, 'Content-Length': String(stat.size) },
       });
     }
+
+    const match = /^bytes=(\d+)-(\d*)$/.exec(range.trim());
+    if (!match) {
+      return new NextResponse('Range Not Satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${stat.size}` },
+      });
+    }
+
+    const start = Number(match[1]);
+    const end = match[2] ? Number(match[2]) : stat.size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end >= stat.size) {
+      return new NextResponse('Range Not Satisfiable', {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${stat.size}` },
+      });
+    }
+
+    const stream = Readable.toWeb(fs.createReadStream(filePath, { start, end })) as ReadableStream<Uint8Array>;
+    return new NextResponse(stream, {
+      status: 206,
+      headers: {
+        ...VIDEO_HEADERS,
+        'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+        'Content-Length': String(end - start + 1),
+      },
+    });
   } catch (error) {
-    console.error('❌ Erro ao servir stream de vídeo:', error);
-    return NextResponse.json(
-      { success: false, error: 'Erro interno ao servir stream de vídeo' },
-      { status: 500 }
-    );
+    console.error('Erro ao servir stream de vídeo:', error);
+    return NextResponse.json({ success: false, error: 'Erro interno ao servir o vídeo.' }, { status: 500 });
   }
 }

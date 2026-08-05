@@ -1,27 +1,25 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from 'next/link';
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus,
   RefreshCw,
   Zap,
-  AlertTriangle,
   Play,
   Clock,
   Loader2,
-  CheckCircle2,
   Filter,
   Search,
   Menu,
 } from "lucide-react";
-import { Instagram, Facebook } from "@/components/icons";
 
 import Sidebar from "@/components/Sidebar";
-import StatCard from "@/components/StatCard";
+import DashboardOverview from "@/components/DashboardOverview";
 import ReelCard from "@/components/ReelCard";
 import AddReelModal from "@/components/AddReelModal";
-import type { Reel, DashboardStats, SchedulerStatus, ReelStage, User } from "@/types";
+import type { PublicReel, DashboardStats, SchedulerStatus, User } from "@/types";
 
 const STAGE_FILTERS: { value: string; label: string }[] = [
   { value: "all", label: "Todos" },
@@ -36,7 +34,7 @@ const STAGE_FILTERS: { value: string; label: string }[] = [
 export default function DashboardClient({ user }: { user: User }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [reels, setReels] = useState<Reel[]>([]);
+  const [reels, setReels] = useState<PublicReel[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
   const [stageFilter, setStageFilter] = useState("all");
@@ -50,7 +48,7 @@ export default function DashboardClient({ user }: { user: User }) {
   const fetchData = useCallback(async () => {
     try {
       const [reelsRes, statsRes, schedulerRes] = await Promise.allSettled([
-        fetch(`/api/reels?limit=50${stageFilter !== "all" ? `&stage=${stageFilter}` : ""}`),
+        fetch("/api/reels?limit=50"),
         fetch("/api/stats"),
         fetch("/api/scheduler"),
       ]);
@@ -74,12 +72,15 @@ export default function DashboardClient({ user }: { user: User }) {
     } finally {
       setLoading(false);
     }
-  }, [stageFilter]);
+  }, []);
 
   useEffect(() => {
-    fetchData();
+    const initialFetch = setTimeout(fetchData, 0);
     const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialFetch);
+      clearInterval(interval);
+    };
   }, [fetchData]);
 
   // Actions
@@ -168,6 +169,7 @@ export default function DashboardClient({ user }: { user: User }) {
 
   // Filter reels
   const filteredReels = reels.filter((r) => {
+    if (stageFilter !== "all" && r.stage !== stageFilter) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return (
@@ -205,7 +207,7 @@ export default function DashboardClient({ user }: { user: User }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h2 className="text-lg font-bold text-heading">Dashboard</h2>
+            <h2 className="text-lg font-bold text-heading">Visão geral</h2>
             {schedulerStatus && (
               <div className="flex items-center gap-1.5">
                 <span
@@ -239,7 +241,7 @@ export default function DashboardClient({ user }: { user: User }) {
               ) : (
                 <Play className="w-4 h-4" />
               )}
-              Rodar Agora
+              <span className="hidden sm:inline">Rodar agora</span>
             </button>
             <button
               onClick={handleReprocessAllFailed}
@@ -252,20 +254,36 @@ export default function DashboardClient({ user }: { user: User }) {
               ) : (
                 <RefreshCw className="w-4 h-4" />
               )}
-              Reprocessar Falhas
+              <span className="hidden lg:inline">Reprocessar falhas</span>
             </button>
             <button
               onClick={() => setShowAddModal(true)}
               className="btn btn-primary btn-sm"
             >
               <Plus className="w-4 h-4" />
-              Adicionar Reel
+              <span className="hidden sm:inline">Adicionar reel</span>
             </button>
           </div>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-6">
+        <div className="p-4 md:p-6 lg:p-8 space-y-7 max-w-[1600px] mx-auto">
+          <section className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--brand-purple)" }}>
+                Painel operacional
+              </p>
+              <h1 className="text-2xl md:text-3xl font-black text-heading mt-1 tracking-tight">
+                Olá, {user.name?.split(" ")[0] || "criador"}.
+              </h1>
+              <p className="text-sm mt-2 max-w-2xl" style={{ color: "var(--text-muted)" }}>
+                Acompanhe alcance, produção e publicações em um só lugar.
+              </p>
+            </div>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              {stats?.active_sources || 0} de {stats?.total_sources || 0} fontes ativas
+            </p>
+          </section>
           {/* Upgrade Banner */}
           {user.plan === "free" && stats && stats.published_total >= 1 && (
             <motion.div
@@ -302,7 +320,7 @@ export default function DashboardClient({ user }: { user: User }) {
                 </div>
               </div>
               <div className="shrink-0 flex items-center gap-3 z-10 w-full md:w-auto justify-end">
-                <a
+                <Link
                   href="/#pricing"
                   className="btn btn-primary btn-sm whitespace-nowrap text-xs font-bold px-4 py-2 rounded-lg transition-all flex items-center gap-1.5 text-white"
                   style={{
@@ -312,42 +330,26 @@ export default function DashboardClient({ user }: { user: User }) {
                 >
                   <Zap className="w-3.5 h-3.5" />
                   Upgrade para PRO
-                </a>
+                </Link>
               </div>
             </motion.div>
           )}
 
-          {/* Stats Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard
-              label="Reels Hoje"
-              value={stats?.published_today || 0}
-              icon={<Instagram className="w-5 h-5" />}
-              color="var(--instagram)"
-              gradient="linear-gradient(90deg, var(--instagram), var(--brand-orange))"
-            />
-            <StatCard
-              label="Total Publicados"
-              value={stats?.published_total || 0}
-              icon={<CheckCircle2 className="w-5 h-5" />}
-              color="var(--success)"
-              gradient="linear-gradient(90deg, var(--success), #10b981)"
-            />
-            <StatCard
-              label="Na Fila"
-              value={stats?.pipeline_queue || 0}
-              icon={<Clock className="w-5 h-5" />}
-              color="var(--warning)"
-              gradient="linear-gradient(90deg, var(--warning), var(--brand-orange))"
-            />
-            <StatCard
-              label="Erros Hoje"
-              value={stats?.errors_today || 0}
-              icon={<AlertTriangle className="w-5 h-5" />}
-              color="var(--danger)"
-              gradient="linear-gradient(90deg, var(--danger), #dc2626)"
-            />
+          <DashboardOverview
+            stats={stats}
+            reels={reels}
+            schedulerStatus={schedulerStatus}
+          />
+          <div className="flex items-end justify-between gap-4 pt-1">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] font-bold" style={{ color: "var(--brand-purple)" }}>
+                Conteúdo
+              </p>
+              <h2 className="text-xl font-extrabold text-heading mt-1">Biblioteca de reels</h2>
+            </div>
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>{filteredReels.length} resultados</span>
           </div>
+
 
           {/* Filter Bar */}
           <div
@@ -374,7 +376,7 @@ export default function DashboardClient({ user }: { user: User }) {
             </div>
 
             {/* Stage filters */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 overflow-x-auto max-w-full pb-1">
               <Filter className="w-4 h-4 mr-1" style={{ color: "var(--text-muted)" }} />
               {STAGE_FILTERS.map((f) => (
                 <button
@@ -498,7 +500,7 @@ export default function DashboardClient({ user }: { user: User }) {
               </span>
               <span className="flex items-center gap-1">
                 <Clock className="w-3 h-3" />
-                Atualização a cada 30 min
+                Atualização automática a cada 5 s
               </span>
             </div>
           </div>

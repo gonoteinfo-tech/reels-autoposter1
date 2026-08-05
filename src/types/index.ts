@@ -54,6 +54,7 @@ export interface Reel {
   original_caption: string;
   hashtags: string;
   duration_seconds: number;
+  views_count: number;
   local_path: string | null;
   processed_path: string | null;
   r2_url: string | null;
@@ -64,9 +65,15 @@ export interface Reel {
   ig_post_id: string | null;
   fb_post_id: string | null;
   published_at: string | null;
+
   created_at: string;
   updated_at: string;
 }
+
+export type PublicReel = Omit<Reel, 'local_path' | 'processed_path' | 'direct_video_url'> & {
+  has_local_video: boolean;
+  has_processed_video: boolean;
+};
 
 /** Configurações globais do sistema */
 export interface AppSettings {
@@ -92,6 +99,22 @@ export interface AppSettings {
   instagram_username?: string;
 }
 
+/** Configurações que podem ser enviadas com segurança ao navegador. */
+export type PublicAppSettings = Omit<AppSettings, 'facebook_page_access_token'> & {
+  facebook_page_access_token_configured: boolean;
+};
+
+/** Página Meta exibida para seleção, sem qualquer token de acesso. */
+export interface FacebookPageOption {
+  id: string;
+  name: string;
+  instagram_business_account?: {
+    id: string;
+    username: string;
+    name: string;
+  };
+}
+
 /** Status do scheduler */
 export interface SchedulerStatus {
   is_running: boolean;
@@ -113,6 +136,10 @@ export interface DashboardStats {
   errors_today: number;
   pipeline_queue: number;
   storage_used_mb: number;
+  total_views: number;
+  average_views_per_reel: number;
+  top_reel_views: number;
+  reels_with_view_data: number;
 }
 
 /** Resposta padrão da API */

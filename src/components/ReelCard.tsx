@@ -13,9 +13,10 @@ import {
   ExternalLink,
   RotateCcw,
   Trash2,
+  Eye,
 } from "lucide-react";
 import { Instagram, Facebook, TikTok, YouTube } from "@/components/icons";
-import type { Reel, ReelStage } from "@/types";
+import type { PublicReel, ReelStage } from "@/types";
 
 function detectPlatform(url: string): 'instagram' | 'tiktok' | 'facebook' | 'youtube' {
   if (!url) return 'instagram';
@@ -24,6 +25,11 @@ function detectPlatform(url: string): 'instagram' | 'tiktok' | 'facebook' | 'you
   if (url.includes('facebook.com')) return 'facebook';
   return 'instagram';
 }
+const compactNumberFormatter = new Intl.NumberFormat("pt-BR", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
 
 const STAGE_CONFIG: Record<
   ReelStage,
@@ -44,7 +50,7 @@ const STAGE_CONFIG: Record<
 const TOTAL_STEPS = 8;
 
 interface ReelCardProps {
-  reel: Reel;
+  reel: PublicReel;
   onPublish?: (reelId: number) => void;
   onReprocess?: (reelId: number) => void;
   onDelete?: (reelId: number) => void;
@@ -63,9 +69,9 @@ export default function ReelCard({ reel, onPublish, onReprocess, onDelete }: Ree
     >
       {/* Thumbnail */}
       <div className="reel-card-thumbnail">
-        {reel.local_path || reel.processed_path || reel.r2_url ? (
+        {reel.has_local_video || reel.has_processed_video || reel.r2_url ? (
           <video
-            src={reel.r2_url || (reel.processed_path ? `/api/videos?id=${reel.id}&type=processed` : reel.local_path ? `/api/videos?id=${reel.id}&type=local` : "")}
+            src={reel.r2_url || (reel.has_processed_video ? `/api/videos?id=${reel.id}&type=processed` : reel.has_local_video ? `/api/videos?id=${reel.id}&type=local` : "")}
             muted
             loop
             playsInline
@@ -175,14 +181,23 @@ export default function ReelCard({ reel, onPublish, onReprocess, onDelete }: Ree
           }
 
           return (
-            <div className="flex items-center gap-1.5 mb-1.5">
-              {icon}
-              <p
-                className="text-[11px] font-semibold"
-                style={{ color: "var(--text-muted)", margin: 0 }}
-              >
-                @{reel.source_username}
-              </p>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="flex items-center gap-1.5 min-w-0">
+                {icon}
+                <p className="text-[11px] font-semibold truncate" style={{ color: "var(--text-muted)", margin: 0 }}>
+                  @{reel.source_username}
+                </p>
+              </div>
+              {reel.views_count > 0 && (
+                <span
+                  className="flex items-center gap-1 text-[10px] font-bold shrink-0"
+                  style={{ color: "var(--brand-purple)" }}
+                  title={`${reel.views_count.toLocaleString("pt-BR")} visualizações na origem`}
+                >
+                  <Eye className="w-3 h-3" />
+                  {compactNumberFormatter.format(reel.views_count)}
+                </span>
+              )}
             </div>
           );
         })()}
