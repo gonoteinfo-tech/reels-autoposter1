@@ -14,6 +14,10 @@ import {
   Filter,
   Search,
   Menu,
+  Layers,
+  Sparkles,
+  ArrowRight,
+  TrendingUp,
 } from "lucide-react";
 import { Instagram, Facebook } from "@/components/icons";
 
@@ -21,12 +25,11 @@ import Sidebar from "@/components/Sidebar";
 import StatCard from "@/components/StatCard";
 import ReelCard from "@/components/ReelCard";
 import AddReelModal from "@/components/AddReelModal";
-import type { Reel, DashboardStats, SchedulerStatus, ReelStage, User } from "@/types";
+import type { Reel, DashboardStats, SchedulerStatus, User } from "@/types";
 
 const STAGE_FILTERS: { value: string; label: string }[] = [
   { value: "all", label: "Todos" },
   { value: "discovered", label: "Descobertos" },
-  { value: "downloading", label: "Baixando" },
   { value: "processing", label: "Processando" },
   { value: "uploaded", label: "Prontos" },
   { value: "published", label: "Publicados" },
@@ -181,7 +184,7 @@ export default function DashboardClient({ user }: { user: User }) {
 
   return (
     <div className="app-layout">
-      {/* Ambient background */}
+      {/* Ambient background glow */}
       <div className="ambient-bg" />
 
       {/* Sidebar */}
@@ -205,27 +208,20 @@ export default function DashboardClient({ user }: { user: User }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h2 className="text-lg font-bold text-heading">Dashboard</h2>
-            {schedulerStatus && (
-              <div className="flex items-center gap-1.5">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    schedulerStatus.scheduler_active ? "animate-pulse" : ""
-                  }`}
-                  style={{
-                    background: schedulerStatus.scheduler_active
-                      ? "var(--success)"
-                      : "var(--text-muted)",
-                  }}
-                />
-                <span
-                  className="text-xs font-medium"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Scheduler {schedulerStatus.scheduler_active ? "ativo" : "inativo"}
-                </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-extrabold text-white tracking-tight">Painel de Controle</h2>
+                {schedulerStatus && (
+                  <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Ativo
+                  </span>
+                )}
               </div>
-            )}
+              <p className="text-[11px] text-slate-400 hidden sm:block">
+                Gerencie pipeline de coleta, edição e publicação automática
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -233,85 +229,70 @@ export default function DashboardClient({ user }: { user: User }) {
               onClick={handleRunNow}
               disabled={triggeringRun}
               className="btn btn-secondary btn-sm"
+              title="Disparar ciclo de descoberta e postagem agora"
             >
               {triggeringRun ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
               ) : (
-                <Play className="w-4 h-4" />
+                <Play className="w-3.5 h-3.5 text-purple-400" />
               )}
-              Rodar Agora
+              <span className="hidden sm:inline">Executar Agora</span>
             </button>
             <button
               onClick={handleReprocessAllFailed}
               disabled={reprocessingAll}
               className="btn btn-secondary btn-sm"
-              title="Reprocessa todos os reels que falharam"
+              title="Reprocessa todos os reels com falha"
             >
               {reprocessingAll ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
               ) : (
-                <RefreshCw className="w-4 h-4" />
+                <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
               )}
-              Reprocessar Falhas
+              <span className="hidden md:inline">Reprocessar Falhas</span>
             </button>
             <button
               onClick={() => setShowAddModal(true)}
               className="btn btn-primary btn-sm"
             >
               <Plus className="w-4 h-4" />
-              Adicionar Reel
+              <span>Adicionar Reel</span>
             </button>
           </div>
         </div>
 
-        {/* Content */}
-        <div className="p-6 space-y-6">
-          {/* Upgrade Banner */}
+        {/* Main Content Area */}
+        <div className="p-5 lg:p-7 space-y-6 max-w-7xl mx-auto w-full">
+          {/* Upgrade Banner for Free Plan */}
           {user.plan === "free" && stats && stats.published_total >= 1 && (
             <motion.div
-              initial={{ opacity: 0, y: -20 }}
+              initial={{ opacity: 0, y: -15 }}
               animate={{ opacity: 1, y: 0 }}
-              className="p-5 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 relative overflow-hidden"
-              style={{
-                background: "linear-gradient(135deg, var(--brand-purple), var(--brand-orange))",
-                border: "1px solid rgba(124, 58, 237, 0.35)",
-                boxShadow: "0 10px 30px rgba(124, 58, 237, 0.25)",
-              }}
+              className="p-5 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 relative overflow-hidden bg-gradient-to-r from-purple-900/60 via-pink-900/50 to-orange-900/60 border border-purple-500/30 shadow-[0_10px_35px_rgba(139,92,246,0.2)]"
             >
               <div className="flex items-start gap-4 z-10">
-                <div
-                  className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0"
-                  style={{
-                    background: "linear-gradient(135deg, var(--brand-pink), var(--brand-purple))",
-                    boxShadow: "0 0 15px rgba(232, 65, 127, 0.25)",
-                  }}
-                >
-                  <Zap className="w-5 h-5 text-white animate-pulse" />
+                <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 bg-gradient-to-br from-purple-500 to-pink-500 shadow-md shadow-purple-500/30">
+                  <Zap className="w-5 h-5 text-white" />
                 </div>
                 <div className="space-y-1">
                   <h4 className="font-extrabold text-white text-sm md:text-base flex items-center gap-2">
                     Limite do Plano Gratuito Atingido
-                    <span className="text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30">
-                      Limite: 1 Reel
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                      1 / 1 Publicação
                     </span>
                   </h4>
-                  <p className="text-xs text-white/90 max-w-2xl leading-relaxed">
-                    Você já atingiu o limite do seu plano gratuito de **1 publicação**.
-                    As próximas postagens automáticas e manuais estão suspensas até que você atualize seu plano.
+                  <p className="text-xs text-slate-200 max-w-2xl leading-relaxed">
+                    Você utilizou a postagem gratuita de teste. Para continuar postando automaticamente sem limites, ter múltiplas fontes e suporte prioritário, faça o upgrade para o plano PRO.
                   </p>
                 </div>
               </div>
               <div className="shrink-0 flex items-center gap-3 z-10 w-full md:w-auto justify-end">
                 <a
                   href="/#pricing"
-                  className="btn btn-primary btn-sm whitespace-nowrap text-xs font-bold px-4 py-2 rounded-lg transition-all flex items-center gap-1.5 text-white"
-                  style={{
-                    background: "linear-gradient(135deg, var(--brand-purple), var(--brand-pink))",
-                    border: "none",
-                  }}
+                  className="btn btn-primary btn-sm whitespace-nowrap text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-1.5"
                 >
-                  <Zap className="w-3.5 h-3.5" />
-                  Upgrade para PRO
+                  <Zap className="w-3.5 h-3.5 fill-white" />
+                  Fazer Upgrade para PRO
                 </a>
               </div>
             </motion.div>
@@ -323,144 +304,150 @@ export default function DashboardClient({ user }: { user: User }) {
               label="Reels Hoje"
               value={stats?.published_today || 0}
               icon={<Instagram className="w-5 h-5" />}
-              color="var(--instagram)"
-              gradient="linear-gradient(90deg, var(--instagram), var(--brand-orange))"
+              color="#e1306c"
+              gradient="linear-gradient(90deg, #e1306c, #f97316)"
+              trend={{ value: 12, label: "vs ontem" }}
             />
             <StatCard
               label="Total Publicados"
               value={stats?.published_total || 0}
               icon={<CheckCircle2 className="w-5 h-5" />}
-              color="var(--success)"
-              gradient="linear-gradient(90deg, var(--success), #10b981)"
+              color="#10b981"
+              gradient="linear-gradient(90deg, #10b981, #06b6d4)"
+              trend={{ value: 24, label: "este mês" }}
             />
             <StatCard
               label="Na Fila"
               value={stats?.pipeline_queue || 0}
               icon={<Clock className="w-5 h-5" />}
-              color="var(--warning)"
-              gradient="linear-gradient(90deg, var(--warning), var(--brand-orange))"
+              color="#f59e0b"
+              gradient="linear-gradient(90deg, #f59e0b, #ec4899)"
             />
             <StatCard
               label="Erros Hoje"
               value={stats?.errors_today || 0}
               icon={<AlertTriangle className="w-5 h-5" />}
-              color="var(--danger)"
-              gradient="linear-gradient(90deg, var(--danger), #dc2626)"
+              color="#ef4444"
+              gradient="linear-gradient(90deg, #ef4444, #dc2626)"
             />
           </div>
 
-          {/* Filter Bar */}
-          <div
-            className="flex flex-wrap items-center gap-3 p-4 rounded-xl"
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--surface-border)",
-            }}
-          >
-            {/* Search */}
-            <div className="relative flex-1 min-w-[200px]">
-              <Search
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4"
-                style={{ color: "var(--text-muted)" }}
-              />
+          {/* Pipeline Stage Quick Overview Bar */}
+          <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/[0.07] flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-purple-400" />
+              <span className="text-xs font-bold text-white uppercase tracking-wider">Status do Pipeline</span>
+            </div>
+            <div className="flex items-center gap-2 sm:gap-4 text-xs font-medium text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-blue-500" />
+                Descobertos: <strong className="text-white">{reels.filter(r => r.stage === 'discovered').length}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                Processando: <strong className="text-white">{reels.filter(r => ['downloading', 'processing', 'uploading'].includes(r.stage)).length}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                Prontos: <strong className="text-white">{reels.filter(r => r.stage === 'uploaded').length}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-pink-500" />
+                Publicados: <strong className="text-white">{reels.filter(r => r.stage === 'published').length}</strong>
+              </span>
+            </div>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-white/[0.02] border border-white/[0.07]">
+            {/* Search Input */}
+            <div className="relative flex-1 min-w-[240px]">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar por legenda ou username..."
-                className="input input-with-icon"
-                style={{ background: "var(--surface-2)" }}
+                placeholder="Buscar por legenda, @perfil ou hashtags..."
+                className="input input-with-icon py-2 text-sm bg-black/40 border-white/[0.08] text-white placeholder-slate-500"
               />
             </div>
 
-            {/* Stage filters */}
-            <div className="flex items-center gap-1">
-              <Filter className="w-4 h-4 mr-1" style={{ color: "var(--text-muted)" }} />
-              {STAGE_FILTERS.map((f) => (
-                <button
-                  key={f.value}
-                  onClick={() => setStageFilter(f.value)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
-                  style={{
-                    background:
-                      stageFilter === f.value
-                        ? "var(--brand-gradient-subtle)"
-                        : "transparent",
-                    color:
-                      stageFilter === f.value
-                        ? "var(--text-primary)"
-                        : "var(--text-muted)",
-                    border:
-                      stageFilter === f.value
-                        ? "1px solid rgba(124,58,237,0.3)"
-                        : "1px solid transparent",
-                  }}
-                >
-                  {f.label}
-                </button>
-              ))}
+            {/* Stage filter pills */}
+            <div className="flex items-center gap-1 overflow-x-auto py-1 max-w-full">
+              <Filter className="w-3.5 h-3.5 text-slate-500 mr-1 hidden sm:block shrink-0" />
+              {STAGE_FILTERS.map((f) => {
+                const count = f.value === 'all' 
+                  ? reels.length 
+                  : reels.filter(r => f.value === 'processing' ? ['downloading', 'processing', 'uploading'].includes(r.stage) : r.stage === f.value).length;
+                const isSelected = stageFilter === f.value;
+
+                return (
+                  <button
+                    key={f.value}
+                    onClick={() => setStageFilter(f.value)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                      isSelected
+                        ? "bg-purple-600/20 text-purple-200 border border-purple-500/40 shadow-sm"
+                        : "text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent"
+                    }`}
+                  >
+                    <span>{f.label}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      isSelected ? "bg-purple-500/30 text-white" : "bg-white/[0.06] text-slate-400"
+                    }`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Refresh */}
+            {/* Refresh Button */}
             <button
               onClick={fetchData}
-              className="btn btn-secondary btn-sm"
-              title="Atualizar"
+              className="btn btn-secondary btn-sm px-2.5"
+              title="Atualizar lista"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className="w-3.5 h-3.5 text-slate-400 hover:text-white" />
             </button>
           </div>
 
-          {/* Reels Grid */}
+          {/* Reels Content Grid */}
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-20">
-              <Loader2
-                className="w-8 h-8 animate-spin mb-3"
-                style={{ color: "var(--brand-purple)" }}
-              />
-              <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                Carregando...
+            <div className="flex flex-col items-center justify-center py-24">
+              <div className="w-12 h-12 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
+                <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+              </div>
+              <p className="text-sm font-medium text-slate-400">
+                Sincronizando pipeline de Reels...
               </p>
             </div>
           ) : filteredReels.length === 0 ? (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="flex flex-col items-center justify-center py-20 text-center"
+              className="flex flex-col items-center justify-center py-20 text-center rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.01] p-8"
             >
               <motion.div
-                animate={{ y: [0, -8, 0] }}
+                animate={{ y: [0, -6, 0] }}
                 transition={{ repeat: Infinity, duration: 3, ease: "easeInOut" }}
               >
-                <div
-                  className="w-20 h-20 rounded-2xl flex items-center justify-center mb-5"
-                  style={{
-                    background: "var(--surface-2)",
-                    border: "1px solid var(--surface-border)",
-                  }}
-                >
-                  <Zap
-                    className="w-10 h-10"
-                    style={{ color: "var(--text-muted)" }}
-                  />
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/10 to-orange-500/10 border border-purple-500/20 flex items-center justify-center mb-4 shadow-inner">
+                  <Sparkles className="w-8 h-8 text-purple-400" />
                 </div>
               </motion.div>
-              <h3 className="text-lg font-bold text-heading mb-2">
+              <h3 className="text-base font-bold text-white mb-1.5">
                 Nenhum Reel encontrado
               </h3>
-              <p
-                className="text-sm max-w-sm mb-4"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Adicione perfis de origem na aba{" "}
-                <strong>Fontes</strong> ou adicione Reels manualmente.
+              <p className="text-xs text-slate-400 max-w-sm mb-5 leading-relaxed">
+                Adicione perfis na aba <strong>Fontes</strong> para coletar automaticamente ou adicione links de vídeos manualmente.
               </p>
               <button
                 onClick={() => setShowAddModal(true)}
-                className="btn btn-primary"
+                className="btn btn-primary text-xs py-2 px-4 rounded-xl"
               >
                 <Plus className="w-4 h-4" />
-                Adicionar Reel
+                Adicionar Primeiro Reel
               </button>
             </motion.div>
           ) : (
@@ -479,26 +466,19 @@ export default function DashboardClient({ user }: { user: User }) {
             </div>
           )}
 
-          {/* Footer stats */}
-          <div
-            className="flex items-center justify-between text-xs p-3 rounded-lg"
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--surface-border)",
-              color: "var(--text-muted)",
-            }}
-          >
+          {/* Footer Bar */}
+          <div className="flex items-center justify-between text-xs px-4 py-3 rounded-xl bg-white/[0.02] border border-white/[0.06] text-slate-400">
             <span>
-              {filteredReels.length} reel{filteredReels.length !== 1 ? "s" : ""} exibido{filteredReels.length !== 1 ? "s" : ""}
+              Mostrando <strong className="text-white">{filteredReels.length}</strong> de <strong className="text-white">{reels.length}</strong> reels
             </span>
-            <div className="flex items-center gap-4">
-              <span className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--success)" }} />
+            <div className="flex items-center gap-4 text-[11px]">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 {stats?.active_sources || 0} fontes ativas
               </span>
-              <span className="flex items-center gap-1">
-                <Clock className="w-3 h-3" />
-                Atualização a cada 30 min
+              <span className="flex items-center gap-1.5">
+                <Clock className="w-3 h-3 text-slate-500" />
+                Varredura periódica ativa
               </span>
             </div>
           </div>

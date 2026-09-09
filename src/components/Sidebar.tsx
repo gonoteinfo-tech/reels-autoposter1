@@ -12,12 +12,13 @@ import {
   Users,
   LogOut,
   X,
+  Sparkles,
 } from "lucide-react";
 import type { User } from "@/types";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/sources", label: "Fontes", icon: Users },
+  { href: "/dashboard/sources", label: "Fontes de Vídeo", icon: Users },
   { href: "/dashboard/settings", label: "Configurações", icon: Settings },
 ];
 
@@ -33,6 +34,7 @@ export default function Sidebar({
   user?: User | null;
   mobileOpen?: boolean;
   onMobileClose?: () => void;
+  schedulerActive?: boolean;
 }) {
   const pathname = usePathname();
 
@@ -60,18 +62,20 @@ export default function Sidebar({
         {/* Logo */}
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">
-            <Zap className="w-5 h-5 text-white" />
+            <Zap className="w-5 h-5 text-white fill-white" />
           </div>
           {!collapsed && (
-            <div className="min-w-0">
-              <h1 className="text-sm font-bold text-heading truncate">
-                GO POST
-              </h1>
-              <p
-                className="text-[10px] font-medium truncate"
-                style={{ color: "var(--text-muted)" }}
-              >
-                Automação de Reels
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <h1 className="text-base font-extrabold tracking-tight text-white leading-none">
+                  GO POST
+                </h1>
+                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 tracking-wider">
+                  2.0
+                </span>
+              </div>
+              <p className="text-[11px] font-medium text-slate-400 mt-1 truncate">
+                Automação Inteligente
               </p>
             </div>
           )}
@@ -79,124 +83,116 @@ export default function Sidebar({
 
         {/* Navigation */}
         <nav className="sidebar-nav">
-          {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-            const isActive =
-              href === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(href);
-            return (
-              <Link
-                key={href}
-                href={href}
-                className={`nav-item relative ${isActive ? "active" : ""}`}
-                title={collapsed ? label : undefined}
-                onClick={onMobileClose}
-              >
-                <Icon className="nav-icon" />
-                {!collapsed && <span>{label}</span>}
-              </Link>
-            );
-          })}
+          <div className="space-y-1">
+            {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+              const isActive =
+                href === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(href);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`nav-item relative ${isActive ? "active" : ""}`}
+                  title={collapsed ? label : undefined}
+                  onClick={onMobileClose}
+                >
+                  <Icon className={`nav-icon ${isActive ? "text-purple-400" : "text-slate-400"}`} />
+                  {!collapsed && (
+                    <span className="truncate">{label}</span>
+                  )}
+                  {isActive && !collapsed && (
+                    <span className="ml-auto w-1.5 h-1.5 rounded-full bg-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.8)]" />
+                  )}
+                </Link>
+              );
+            })}
+          </div>
 
           {/* Divider */}
-          <div
-            className="my-3 mx-2"
-            style={{ borderTop: "1px solid var(--surface-border)" }}
-          />
+          <div className="my-4 mx-2 border-t border-white/[0.06]" />
 
-          {/* Scheduler status indicator */}
-          <div
-            className="nav-item"
-            style={{ cursor: "default", opacity: 0.7 }}
-          >
-            <Clock className="nav-icon" />
-            {!collapsed && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs">Scheduler</span>
-                <span className="flex items-center gap-1">
-                  <span
-                    className="w-1.5 h-1.5 rounded-full"
-                    style={{ background: "var(--success)" }}
-                  />
-                  {!collapsed && (
-                    <span
-                      className="text-[10px]"
-                      style={{ color: "var(--success)" }}
-                    >
-                      Ativo
-                    </span>
-                  )}
-                </span>
+          {/* Scheduler status card */}
+          {!collapsed ? (
+            <div className="mx-2 p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                  <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-slate-200 leading-none">Automação</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Scheduler ativo</p>
+                </div>
               </div>
-            )}
-          </div>
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+            </div>
+          ) : (
+            <div className="flex justify-center" title="Automação Ativa">
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              </div>
+            </div>
+          )}
         </nav>
 
         {/* User profile & Logout */}
         {user && (
-          <div 
-            className="flex items-center gap-2"
-            style={{ 
-              borderTop: "1px solid var(--surface-border)", 
-              padding: "12px 8px",
-              margin: "0 8px" 
-            }}
-          >
-            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <div className="p-3 border-t border-white/[0.06] bg-black/20">
+            <div className="flex items-center gap-2.5">
               {user.picture ? (
                 <img 
                   src={user.picture} 
                   alt={user.name} 
-                  className="w-7 h-7 rounded-full border border-[var(--surface-border)] flex-shrink-0" 
+                  className="w-8 h-8 rounded-full border border-purple-500/30 flex-shrink-0 object-cover" 
                 />
               ) : (
-                <div 
-                  className="w-7 h-7 rounded-full flex items-center justify-center font-bold text-white text-[10px] flex-shrink-0" 
-                  style={{ background: "var(--brand-gradient-subtle)", border: "1px solid var(--surface-border)" }}
-                >
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center font-bold text-white text-xs flex-shrink-0 shadow-sm">
                   {user.name.charAt(0).toUpperCase()}
                 </div>
               )}
               {!collapsed && (
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-bold text-heading truncate leading-tight">{user.name}</p>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="text-[9px] truncate" style={{ color: "var(--text-muted)", maxWidth: "70px" }}>
-                      {user.email}
-                    </span>
-                    <span className={`text-[8px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider shrink-0 ${
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-xs font-semibold text-white truncate leading-tight">{user.name}</p>
+                    <span className={`text-[8px] font-extrabold px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
                       user.plan === 'pro'
                         ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                        : 'bg-zinc-500/20 text-zinc-400 border border-zinc-500/30'
+                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
                     }`}>
-                      {user.plan === 'pro' ? 'PRO' : 'GRÁTIS'}
+                      {user.plan === 'pro' ? 'PRO' : 'FREE'}
                     </span>
                   </div>
+                  <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                    {user.email}
+                  </p>
                 </div>
               )}
+              <Link 
+                href="/api/auth/logout" 
+                className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0 ml-auto" 
+                title="Sair da Conta"
+                prefetch={false}
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </Link>
             </div>
-            <Link 
-              href="/api/auth/logout" 
-              className="p-1.5 rounded-lg hover:bg-[var(--surface-2)] text-red-400 hover:text-red-300 transition-colors flex-shrink-0" 
-              title="Sair"
-              prefetch={false}
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </Link>
           </div>
         )}
 
         {/* Collapse toggle */}
-        <div style={{ borderTop: "1px solid var(--surface-border)" }}>
+        <div className="border-t border-white/[0.06] p-2">
           <button
             onClick={onToggle}
-            className="nav-item justify-center"
-            style={{ margin: "8px" }}
+            className="nav-item justify-center text-slate-400 hover:text-white"
+            title={collapsed ? "Expandir menu" : "Recolher menu"}
           >
             {collapsed ? (
               <PanelLeftOpen className="nav-icon" />
             ) : (
               <>
                 <PanelLeftClose className="nav-icon" />
-                <span>Recolher</span>
+                <span className="text-xs">Recolher Menu</span>
               </>
             )}
           </button>

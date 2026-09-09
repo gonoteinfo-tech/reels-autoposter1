@@ -13,6 +13,10 @@ import {
   AtSign,
   RefreshCw,
   Menu,
+  CheckCircle2,
+  Sparkles,
+  ExternalLink,
+  ShieldCheck,
 } from "lucide-react";
 import { Instagram, Facebook, TikTok, YouTube } from "@/components/icons";
 
@@ -26,33 +30,12 @@ export default function SourcesClient({ user }: { user: User }) {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [platform, setPlatform] = useState<'instagram' | 'tiktok' | 'facebook' | 'youtube'>('instagram');
+  const [selectedFilter, setSelectedFilter] = useState<string>('all');
   const [newUsername, setNewUsername] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState("");
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [syncingId, setSyncingId] = useState<number | null>(null);
-
-  const handleSync = async (id: number) => {
-    setSyncingId(id);
-    try {
-      const res = await fetch("/api/sources/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceId: id }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        alert(data.message || "Importação concluída com sucesso!");
-        fetchSources();
-      } else {
-        alert("Erro na importação: " + data.error);
-      }
-    } catch {
-      alert("Erro de conexão com o servidor");
-    } finally {
-      setSyncingId(null);
-    }
-  };
 
   const fetchSources = useCallback(async () => {
     try {
@@ -69,6 +52,27 @@ export default function SourcesClient({ user }: { user: User }) {
   useEffect(() => {
     fetchSources();
   }, [fetchSources]);
+
+  const handleSync = async (id: number) => {
+    setSyncingId(id);
+    try {
+      const res = await fetch("/api/sources/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceId: id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        fetchSources();
+      } else {
+        alert("Erro na importação: " + data.error);
+      }
+    } catch {
+      alert("Erro de conexão com o servidor");
+    } finally {
+      setSyncingId(null);
+    }
+  };
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,6 +121,13 @@ export default function SourcesClient({ user }: { user: User }) {
     }
   };
 
+  const filteredSources = sources.filter((s) => {
+    if (selectedFilter === 'all') return true;
+    return (s.platform || 'instagram') === selectedFilter;
+  });
+
+  const totalReelsCollected = sources.reduce((acc, s) => acc + (s.reels_count || 0), 0);
+
   return (
     <div className="app-layout">
       <div className="ambient-bg" />
@@ -139,40 +150,52 @@ export default function SourcesClient({ user }: { user: User }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <Users className="w-5 h-5" style={{ color: "var(--brand-purple)" }} />
-            <h2 className="text-lg font-bold text-heading">Fontes de Conteúdo</h2>
-            <span className="badge badge-neutral">{sources.length}</span>
+            <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+              <Users className="w-4 h-4 text-purple-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-extrabold text-white tracking-tight">Fontes de Vídeo</h2>
+              <p className="text-[11px] text-slate-400 hidden sm:block">Perfis monitorados para scraping automático de conteúdo</p>
+            </div>
           </div>
           <button
             onClick={() => setShowAdd(true)}
             className="btn btn-primary btn-sm"
           >
             <Plus className="w-4 h-4" />
-            Adicionar Fonte
+            <span>Adicionar Fonte</span>
           </button>
         </div>
 
-        <div className="p-6 space-y-6">
-          {/* Info banner */}
-          <div
-            className="flex items-start gap-3 p-4 rounded-xl"
-            style={{
-              background: "var(--info-bg)",
-              border: "1px solid rgba(59,130,246,0.15)",
-            }}
-          >
-            <RefreshCw className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: "var(--info)" }} />
-            <div>
-              <p className="text-sm font-semibold text-heading mb-1">
-                Fontes de Conteúdo Multi-Plataforma
+        <div className="p-5 lg:p-7 max-w-6xl mx-auto w-full space-y-6">
+          {/* Quick Metrics Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md">
+              <p className="text-xs text-slate-400 font-medium mb-1">Perfis Monitorados</p>
+              <p className="text-2xl font-extrabold text-white">{sources.length}</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md">
+              <p className="text-xs text-slate-400 font-medium mb-1">Fontes Ativas</p>
+              <p className="text-2xl font-extrabold text-emerald-400">
+                {sources.filter(s => s.is_active).length}
               </p>
-              <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                Monitore perfis do <strong>Instagram</strong>, <strong>TikTok</strong>, páginas do <strong>Facebook</strong> ou canais do <strong>YouTube Shorts</strong>. O sistema varre as fontes automaticamente, processa os vídeos com sua logo e publica os novos conteúdos diretamente nas suas contas conectadas!
-              </p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md">
+              <p className="text-xs text-slate-400 font-medium mb-1">Total Coletados</p>
+              <p className="text-2xl font-extrabold text-purple-400">{totalReelsCollected}</p>
+            </div>
+            <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md">
+              <p className="text-xs text-slate-400 font-medium mb-1">Redes Suportadas</p>
+              <div className="flex items-center gap-2 mt-1">
+                <Instagram className="w-4 h-4 text-[#e1306c]" />
+                <TikTok className="w-4 h-4 text-[#00f2fe]" />
+                <YouTube className="w-4 h-4 text-[#ff0000]" />
+                <Facebook className="w-4 h-4 text-[#1877f2]" />
+              </div>
             </div>
           </div>
 
-          {/* Add form (inline) */}
+          {/* Add Source Drawer / Form */}
           <AnimatePresence>
             {showAdd && (
               <motion.div
@@ -181,212 +204,277 @@ export default function SourcesClient({ user }: { user: User }) {
                 exit={{ opacity: 0, height: 0 }}
                 className="overflow-hidden"
               >
-                <form
-                  onSubmit={handleAdd}
-                  className="card flex items-end gap-3 flex-wrap md:flex-nowrap w-full"
-                >
-                    <div className="w-full md:w-48">
-                      <label className="label">Plataforma</label>
-                      <select
-                        value={platform}
-                        onChange={(e) => setPlatform(e.target.value as any)}
-                        className="input"
-                        style={{ background: "var(--surface-2)", color: "white" }}
-                      >
-                        <option value="instagram">Instagram</option>
-                        <option value="tiktok">TikTok</option>
-                        <option value="facebook">Facebook</option>
-                        <option value="youtube">YouTube (Shorts)</option>
-                      </select>
-                    </div>
-                    <div className="flex-1 w-full">
-                      <label className="label">
-                        {platform === 'instagram' && "Username do Instagram"}
-                        {platform === 'tiktok' && "Username do TikTok (sem @)"}
-                        {platform === 'facebook' && "Slug / Nome de Usuário da Página"}
-                        {platform === 'youtube' && "Nome de Usuário / Identificador do Canal (sem @)"}
-                      </label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                          <AtSign className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
-                        </div>
-                        <input
-                          type="text"
-                          value={newUsername}
-                          onChange={(e) => setNewUsername(e.target.value)}
-                          placeholder={
-                            platform === 'instagram' ? "username" :
-                            platform === 'tiktok' ? "ex: user_tiktok" :
-                            platform === 'facebook' ? "ex: minha.pagina" :
-                            "ex: canal_youtube"
-                          }
-                          className="input input-with-icon"
-                          autoFocus
-                        />
-                      </div>
-                      {addError && (
-                        <p className="text-xs mt-1 flex items-center gap-1" style={{ color: "var(--danger)" }}>
-                          <AlertCircle className="w-3 h-3" />
-                          {addError}
-                        </p>
-                      )}
+                <div className="p-5 rounded-2xl bg-white/[0.03] border border-purple-500/30 shadow-[0_10px_30px_rgba(139,92,246,0.15)] relative">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-purple-400" />
+                      <h3 className="text-sm font-bold text-white">Cadastrar Nova Fonte de Conteúdo</h3>
                     </div>
                     <button
-                      type="submit"
-                      disabled={!newUsername.trim() || adding}
-                      className="btn btn-primary"
-                    >
-                      {adding ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Plus className="w-4 h-4" />
-                      )}
-                      Adicionar
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => {
                         setShowAdd(false);
                         setAddError("");
                       }}
-                      className="btn btn-secondary"
+                      className="p-1 rounded-lg text-slate-400 hover:text-white"
                     >
                       <X className="w-4 h-4" />
                     </button>
-                </form>
+                  </div>
+
+                  <form onSubmit={handleAdd} className="space-y-4">
+                    {/* Platform Selector Buttons */}
+                    <div>
+                      <label className="label mb-2">Selecione a Plataforma</label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {[
+                          { id: 'instagram', label: 'Instagram', icon: <Instagram className="w-4 h-4 text-[#e1306c]" />, color: '#e1306c' },
+                          { id: 'tiktok', label: 'TikTok', icon: <TikTok className="w-4 h-4 text-[#00f2fe]" />, color: '#00f2fe' },
+                          { id: 'youtube', label: 'YouTube Shorts', icon: <YouTube className="w-4 h-4 text-[#ff0000]" />, color: '#ff0000' },
+                          { id: 'facebook', label: 'Facebook', icon: <Facebook className="w-4 h-4 text-[#1877f2]" />, color: '#1877f2' },
+                        ].map((p) => {
+                          const active = platform === p.id;
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => setPlatform(p.id as any)}
+                              className={`p-3 rounded-xl border flex items-center justify-center gap-2 text-xs font-bold transition-all ${
+                                active
+                                  ? "bg-purple-600/20 border-purple-500 text-white shadow-sm"
+                                  : "bg-white/[0.02] border-white/[0.08] text-slate-400 hover:text-white hover:bg-white/[0.05]"
+                              }`}
+                            >
+                              {p.icon}
+                              <span>{p.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Username Input */}
+                    <div>
+                      <label className="label">
+                        {platform === 'instagram' && "Username / @ do Perfil no Instagram"}
+                        {platform === 'tiktok' && "Username do TikTok (sem @)"}
+                        {platform === 'facebook' && "Slug / Nome de Usuário da Página do Facebook"}
+                        {platform === 'youtube' && "Identificador / Canal do YouTube (sem @)"}
+                      </label>
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                            <AtSign className="w-4 h-4 text-slate-500" />
+                          </div>
+                          <input
+                            type="text"
+                            value={newUsername}
+                            onChange={(e) => setNewUsername(e.target.value)}
+                            placeholder={
+                              platform === 'instagram' ? "ex: criador_digital" :
+                              platform === 'tiktok' ? "ex: criador.tiktok" :
+                              platform === 'facebook' ? "ex: pagina.oficial" :
+                              "ex: canal_shorts"
+                            }
+                            className="input input-with-icon text-white placeholder-slate-500"
+                            autoFocus
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={!newUsername.trim() || adding}
+                          className="btn btn-primary px-5"
+                        >
+                          {adding ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Plus className="w-4 h-4" />
+                          )}
+                          <span>Salvar Fonte</span>
+                        </button>
+                      </div>
+                      {addError && (
+                        <p className="text-xs mt-2 flex items-center gap-1.5 text-red-400">
+                          <AlertCircle className="w-3.5 h-3.5" />
+                          {addError}
+                        </p>
+                      )}
+                    </div>
+                  </form>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
 
-          {/* Sources list */}
+          {/* Filter Tabs & Header */}
+          <div className="flex items-center justify-between flex-wrap gap-3 pb-1 border-b border-white/[0.06]">
+            <div className="flex items-center gap-1 overflow-x-auto py-1">
+              {[
+                { id: 'all', label: 'Todas as Fontes', count: sources.length },
+                { id: 'instagram', label: 'Instagram', count: sources.filter(s => (s.platform || 'instagram') === 'instagram').length },
+                { id: 'tiktok', label: 'TikTok', count: sources.filter(s => s.platform === 'tiktok').length },
+                { id: 'youtube', label: 'YouTube', count: sources.filter(s => s.platform === 'youtube').length },
+                { id: 'facebook', label: 'Facebook', count: sources.filter(s => s.platform === 'facebook').length },
+              ].map((tab) => {
+                const active = selectedFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setSelectedFilter(tab.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                      active
+                        ? "bg-white/[0.08] text-white border border-white/10"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <span>{tab.label}</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-white/[0.06] text-slate-400">
+                      {tab.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={fetchSources}
+              className="btn btn-secondary btn-sm"
+              title="Atualizar lista"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span className="text-xs">Atualizar</span>
+            </button>
+          </div>
+
+          {/* Sources List */}
           {loading ? (
             <div className="flex flex-col items-center py-20">
-              <Loader2 className="w-8 h-8 animate-spin mb-3" style={{ color: "var(--brand-purple)" }} />
-              <p className="text-sm" style={{ color: "var(--text-muted)" }}>Carregando fontes...</p>
+              <Loader2 className="w-8 h-8 animate-spin mb-3 text-purple-400" />
+              <p className="text-xs text-slate-400">Carregando fontes cadastradas...</p>
             </div>
-          ) : sources.length === 0 ? (
+          ) : filteredSources.length === 0 ? (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="flex flex-col items-center py-20 text-center"
+              className="flex flex-col items-center py-20 text-center rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.01] p-8"
             >
-              <div
-                className="w-20 h-20 rounded-2xl flex items-center justify-center mb-5 animate-float"
-                style={{ background: "var(--surface-2)", border: "1px solid var(--surface-border)" }}
-              >
-                <Users className="w-10 h-10" style={{ color: "var(--text-muted)" }} />
+              <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
+                <Users className="w-8 h-8 text-purple-400" />
               </div>
-              <h3 className="text-lg font-bold text-heading mb-2">Nenhuma fonte cadastrada</h3>
-              <p className="text-sm max-w-sm mb-4" style={{ color: "var(--text-muted)" }}>
-                Adicione perfis do Instagram, TikTok, Facebook ou YouTube para o sistema monitorar e coletar vídeos automaticamente.
+              <h3 className="text-base font-bold text-white mb-1.5">Nenhuma fonte encontrada</h3>
+              <p className="text-xs max-w-sm mb-5 text-slate-400 leading-relaxed">
+                Adicione perfis do Instagram, TikTok, Facebook ou canais do YouTube para que o sistema monitore e publique automaticamente.
               </p>
-              <button onClick={() => setShowAdd(true)} className="btn btn-primary">
+              <button onClick={() => setShowAdd(true)} className="btn btn-primary text-xs py-2 px-4 rounded-xl">
                 <Plus className="w-4 h-4" />
-                Adicionar Primeira Fonte
+                Cadastrar Primeira Fonte
               </button>
             </motion.div>
           ) : (
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
               <AnimatePresence>
-                {sources.map((source, i) => (
-                  <motion.div
-                    key={source.id}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 20 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="card flex items-center gap-4 hover:border-[var(--surface-border-hover)] transition-all"
-                  >
-                    {/* Avatar */}
-                    {(() => {
-                      const plat = source.platform || 'instagram';
-                      let icon = <Instagram className="w-5 h-5" style={{ color: "var(--instagram)" }} />;
-                      let bg = "rgba(225, 48, 108, 0.15)";
-                      let border = "rgba(225, 48, 108, 0.3)";
+                {filteredSources.map((source, i) => {
+                  const plat = source.platform || 'instagram';
+                  let icon = <Instagram className="w-4 h-4 text-[#e1306c]" />;
+                  let platBorder = "rgba(225, 48, 108, 0.3)";
+                  let platBg = "rgba(225, 48, 108, 0.12)";
 
-                      if (plat === 'tiktok') {
-                        icon = <TikTok className="w-5 h-5" style={{ color: "#00f2fe" }} />;
-                        bg = "rgba(0, 242, 254, 0.1)";
-                        border = "rgba(0, 242, 254, 0.25)";
-                      } else if (plat === 'youtube') {
-                        icon = <YouTube className="w-5 h-5" style={{ color: "#ff0000" }} />;
-                        bg = "rgba(255, 0, 0, 0.1)";
-                        border = "rgba(255, 0, 0, 0.25)";
-                      } else if (plat === 'facebook') {
-                        icon = <Facebook className="w-5 h-5" style={{ color: "var(--facebook)" }} />;
-                        bg = "rgba(24, 119, 242, 0.15)";
-                        border = "rgba(24, 119, 242, 0.3)";
-                      }
+                  if (plat === 'tiktok') {
+                    icon = <TikTok className="w-4 h-4 text-[#00f2fe]" />;
+                    platBorder = "rgba(0, 242, 254, 0.3)";
+                    platBg = "rgba(0, 242, 254, 0.12)";
+                  } else if (plat === 'youtube') {
+                    icon = <YouTube className="w-4 h-4 text-[#ff0000]" />;
+                    platBorder = "rgba(255, 0, 0, 0.3)";
+                    platBg = "rgba(255, 0, 0, 0.12)";
+                  } else if (plat === 'facebook') {
+                    icon = <Facebook className="w-4 h-4 text-[#1877f2]" />;
+                    platBorder = "rgba(24, 119, 242, 0.3)";
+                    platBg = "rgba(24, 119, 242, 0.12)";
+                  }
 
-                      return (
+                  return (
+                    <motion.div
+                      key={source.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      transition={{ delay: i * 0.04 }}
+                      className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] hover:border-purple-500/30 transition-all flex items-center justify-between gap-4 group"
+                    >
+                      {/* Left: Avatar and Info */}
+                      <div className="flex items-center gap-3.5 min-w-0">
                         <div
-                          className="w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0"
+                          className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 border relative"
                           style={{
-                            background: bg,
-                            border: `2px solid ${border}`,
+                            background: platBg,
+                            borderColor: platBorder,
                           }}
                         >
                           {icon}
-                        </div>
-                      );
-                    })()}
-
-                    {/* Info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="font-semibold text-heading">
-                          @{source.username}
-                        </p>
-                        {source.is_active ? (
-                          <span className="badge badge-success">Ativo</span>
-                        ) : (
-                          <span className="badge badge-neutral">Inativo</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 mt-1">
-                        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {source.reels_count || 0} reels coletados
-                        </span>
-                        {source.last_checked_at && (
-                          <span className="text-xs flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
-                            <Clock className="w-3 h-3" />
-                            Verificado: {new Date(source.last_checked_at).toLocaleString("pt-BR")}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex gap-2">
-                      {source.username !== "manual" && (
-                        <button
-                          onClick={() => handleSync(source.id)}
-                          disabled={syncingId !== null || deletingId !== null}
-                          className="btn btn-secondary btn-sm flex items-center gap-1.5"
-                          title="Importar/Varrer novos Reels desta fonte agora"
-                        >
-                          {syncingId === source.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-4 h-4" />
+                          {source.is_active && (
+                            <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-[#09090d]" />
                           )}
-                          Sincronizar
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleDelete(source.id)}
-                        disabled={deletingId === source.id || syncingId !== null}
-                        className="btn btn-danger btn-sm"
-                      >
-                        {deletingId === source.id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="w-4 h-4" />
+                        </div>
+
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-bold text-white truncate">
+                              @{source.username}
+                            </p>
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full uppercase bg-white/[0.05] text-slate-400 border border-white/[0.06]">
+                              {plat}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 mt-1 text-xs text-slate-400">
+                            <span className="font-semibold text-purple-300">
+                              {source.reels_count || 0} coletados
+                            </span>
+                            {source.last_checked_at && (
+                              <span className="hidden sm:flex items-center gap-1 text-[11px] text-slate-500">
+                                <Clock className="w-3 h-3" />
+                                {new Date(source.last_checked_at).toLocaleDateString("pt-BR", { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Actions */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {source.username !== "manual" && (
+                          <button
+                            onClick={() => handleSync(source.id)}
+                            disabled={syncingId !== null || deletingId !== null}
+                            className="btn btn-secondary btn-sm text-xs py-1.5 px-3 flex items-center gap-1.5"
+                            title="Sincronizar e buscar novos vídeos deste perfil"
+                          >
+                            {syncingId === source.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                            ) : (
+                              <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                            )}
+                            <span className="hidden sm:inline">Sincronizar</span>
+                          </button>
                         )}
-                      </button>
-                    </div>
-                  </motion.div>
-                ))}
+                        <button
+                          onClick={() => {
+                            if (confirm(`Remover fonte @${source.username}?`)) {
+                              handleDelete(source.id);
+                            }
+                          }}
+                          disabled={deletingId === source.id || syncingId !== null}
+                          className="btn btn-sm bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-2.5 py-1.5"
+                          title="Remover Fonte"
+                        >
+                          {deletingId === source.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </motion.div>
+                  );
+                })}
               </AnimatePresence>
             </div>
           )}
