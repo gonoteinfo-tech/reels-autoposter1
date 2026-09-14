@@ -10,6 +10,7 @@ import {
 import { getLoggedInUser } from '@/services/auth';
 import { publishReel as publishToInstagram } from '@/services/instagram-publisher';
 import { publishReelToPage as publishToFacebook } from '@/services/facebook-publisher';
+import { buildCaption } from '@/services/pipeline';
 import type { ApiResponse } from '@/types';
 
 /** Garante que o banco está inicializado */
@@ -106,12 +107,18 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
     const result: { igPostId?: string; fbPostId?: string } = {};
     const updateData: Record<string, unknown> = {};
 
+    const finalCaption = buildCaption(
+      reel.caption || reel.original_caption,
+      reel.hashtags,
+      settings.custom_caption_template
+    );
+
     // Publicar no Instagram (usando credenciais do usuário)
     if (targets.includes('instagram')) {
       try {
         const { mediaId } = await publishToInstagram(
           reel.r2_url,
-          reel.caption || reel.original_caption,
+          finalCaption,
           settings.facebook_page_access_token,
           settings.instagram_business_account_id
         );
@@ -135,7 +142,7 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       try {
         const fbPostId = await publishToFacebook(
           reel.r2_url,
-          reel.caption || reel.original_caption,
+          finalCaption,
           settings.facebook_page_access_token,
           settings.facebook_page_id
         );

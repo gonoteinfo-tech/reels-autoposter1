@@ -23,7 +23,7 @@ import { addLogoToVideo } from './video-processor';
 import { uploadVideo, generateR2Key } from './storage';
 import { publishReel as publishToInstagram } from './instagram-publisher';
 import { publishReelToPage } from './facebook-publisher';
-import { rewriteCaption } from './ai-caption';
+import { rewriteCaption, ensureMinimumHashtags } from './ai-caption';
 
 /** Diretórios de trabalho do pipeline */
 const DOWNLOADS_DIR = path.join(process.cwd(), 'data', 'downloads');
@@ -154,7 +154,9 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       // A IA reescreve a legenda da fonte. Só preserva se o usuário tiver definido uma legenda custom.
       let finalCaption = reel!.caption;
       if (!finalCaption) {
-        finalCaption = await rewriteCaption(originalCaption);
+        finalCaption = await rewriteCaption(originalCaption, reel!.hashtags);
+      } else {
+        finalCaption = ensureMinimumHashtags(finalCaption, reel!.hashtags, 6);
       }
 
       updateReel(reelId, {
@@ -623,20 +625,23 @@ export async function runPipeline(forceDiscovery = false, specificUserId?: numbe
 }
 
 /**
- * Monta a legenda final para publicação a partir do template e dados do reel.
+ * Monta a legenda final para publicação a partir do template e dados do reel,
+ * garantindo no mínimo 6 hashtags relacionadas.
  */
-function buildCaption(caption: string, hashtags: string, template: string): string {
+export function buildCaption(caption: string, hashtags: string, template: string): string {
+  let result = '';
   if (template) {
-    return template
+    result = template
       .replace('{caption}', caption || '')
       .replace('{hashtags}', hashtags || '')
       .trim();
+  } else {
+    const parts: string[] = [];
+    if (caption) parts.push(caption);
+    // Só anexa as hashtags da fonte se a legenda (ex: reescrita pela IA) ainda não tiver hashtags
+    if (hashtags && !caption.includes('#')) parts.push(hashtags);
+    result = parts.join('\n\n');
   }
 
-  const parts: string[] = [];
-  if (caption) parts.push(caption);
-  // Só anexa as hashtags da fonte se a legenda (ex: reescrita pela IA) ainda não tiver hashtags
-  if (hashtags && !caption.includes('#')) parts.push(hashtags);
-
-  return parts.join('\n\n');
+  return ensureMinimumHashtags(result, hashtags, 6);
 }
