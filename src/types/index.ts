@@ -57,7 +57,7 @@ export interface Reel {
   local_path: string | null;
   processed_path: string | null;
   r2_url: string | null;
-  /** URL direta do vídeo fornecida pela Apify (evita cookies/scraping no download) */
+  /** URL direta do vídeo fornecida pela Bright Data (evita cookies/scraping no download) */
   direct_video_url: string | null;
   stage: ReelStage;
   error_message: string | null;
@@ -77,7 +77,7 @@ export interface AppSettings {
   max_reels_per_run: number;
   /** Quantos vídeos descobrir/puxar por sincronização */
   discovery_limit: number;
-  /** Intervalo mínimo (minutos) entre descobertas de cada fonte — controla consumo de crédito Apify */
+  /** Intervalo mínimo (minutos) entre descobertas de cada fonte — controla consumo de crédito Bright Data */
   discovery_interval_minutes: number;
   /** Intervalo mínimo (minutos) entre publicações — trava de ritmo de postagem */
   publish_interval_minutes: number;

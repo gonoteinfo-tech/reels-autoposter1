@@ -576,7 +576,7 @@ export default function SettingsClient({ user }: { user: User }) {
                   onChange={(e) => updateSetting("discovery_interval_minutes", Number(e.target.value))}
                   className="input"
                 />
-                <p className="text-[11px] text-slate-500 mt-1">Economiza cotas de scraping da Apify.</p>
+                <p className="text-[11px] text-slate-500 mt-1">Economiza cotas de scraping da Bright Data.</p>
               </div>
             </div>
 

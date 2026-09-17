@@ -284,7 +284,7 @@ export function initDatabase(): void {
       const hasDirectVideoUrl = reelsColumns.some(c => c.name === 'direct_video_url');
       if (!hasDirectVideoUrl) {
         database.exec("ALTER TABLE reels ADD COLUMN direct_video_url TEXT");
-        console.log('💾 Campo direct_video_url adicionado à tabela reels (Apify integration)');
+        console.log('💾 Campo direct_video_url adicionado à tabela reels (integração de scraping)');
       }
     }
   }
@@ -756,7 +756,7 @@ export function createReel(data: {
   original_caption?: string;
   hashtags?: string;
   user_id: number;
-  /** URL direta do vídeo fornecida pela Apify (evita cookies/scraping no download) */
+  /** URL direta do vídeo fornecida pela Bright Data (evita cookies/scraping no download) */
   direct_video_url?: string;
 }): Reel {
   const database = getDb();

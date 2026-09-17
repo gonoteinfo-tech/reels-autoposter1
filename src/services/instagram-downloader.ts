@@ -107,7 +107,7 @@ export function isRateLimitError(message: string): boolean {
  *
  * Em caso de HTTP 429 (Too Many Requests), aplica backoff exponencial com jitter
  * antes de re-tentar. Atenção: em IPs de datacenter/VPS o Instagram costuma manter o
- * 429 indefinidamente — a solução robusta é usar a Apify (proxies residenciais).
+ * 429 indefinidamente — a solução robusta é usar a Bright Data (proxies residenciais).
  */
 async function execYtDlpResilient(
   ytdlp: string,
@@ -217,7 +217,7 @@ export async function randomSleep(minMs: number = 3000, maxMs: number = 12000): 
 
 /**
  * Baixa um vídeo a partir de uma URL direta (CDN) usando yt-dlp — sem precisar de cookies.
- * Usado quando a Apify já forneceu a URL direta do vídeo.
+ * Usado quando a Bright Data já forneceu a URL direta do vídeo.
  *
  * @param directVideoUrl URL direta do vídeo (ex: CDN do Instagram)
  * @param outputDir Diretório onde salvar o arquivo
@@ -550,7 +550,7 @@ async function discoverReelsYtDlp(
     if (isRateLimitError(msg)) {
       throw new Error(
         platform === 'instagram'
-          ? `O Instagram bloqueou o acesso por IP (HTTP 429). Configure a integração Apify (APIFY_TOKEN) para descobrir reels via proxies residenciais, sem bloqueio de VPS.`
+          ? `O Instagram bloqueou o acesso por IP (HTTP 429). Configure a integração Bright Data (BRIGHTDATA_API_TOKEN) para descobrir reels via proxies residenciais, sem bloqueio de VPS.`
           : `O ${platform} retornou HTTP 429 (rate limit). Aguarde alguns minutos e tente novamente.`
       );
     }

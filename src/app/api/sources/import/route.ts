@@ -12,7 +12,7 @@ import {
 import { getLoggedInUser } from '@/services/auth';
 import { discoverReels, extractVideoId } from '@/services/instagram-downloader';
 import { processReel } from '@/services/pipeline';
-import { isApifyConfigured, discoverReelsApify } from '@/services/apify-discoverer';
+import { isBrightDataConfigured, discoverReelsBrightData } from '@/services/brightdata-discoverer';
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -70,41 +70,41 @@ export async function POST(request: Request) {
     let newCount = 0;
     const newReelIds: number[] = [];
 
-    // ── Instagram: usar Apify se configurado ──
-    if (platform === 'instagram' && isApifyConfigured()) {
-      console.log(`🤖 [Apify] Usando Apify para varredura manual de @${source.username}`);
-      const apifyReels = await discoverReelsApify(source.username, discoveryLimit);
+    // ── Instagram: usar Bright Data se configurado ──
+    if (platform === 'instagram' && isBrightDataConfigured()) {
+      console.log(`🌐 [Bright Data] Usando Bright Data para varredura manual de @${source.username}`);
+      const scrapedReels = await discoverReelsBrightData(source.username, discoveryLimit);
 
-      for (const apifyReel of apifyReels) {
-        const url = apifyReel.url;
+      for (const scrapedReel of scrapedReels) {
+        const url = scrapedReel.url;
         const existing = getReelByUrl(url, user.id)
-          || (apifyReel.id ? getReelByInstagramId(apifyReel.id, user.id) : null);
+          || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, user.id) : null);
         if (existing) continue;
 
         const newReel = createReel({
           source_id: source.id,
           source_username: source.username,
           instagram_url: url,
-          instagram_id: apifyReel.id,
+          instagram_id: scrapedReel.id,
           // caption vazio → IA reescreve no download; legenda da fonte vai em original_caption
           caption: '',
-          original_caption: apifyReel.caption || '',
-          hashtags: apifyReel.hashtags.join(' '),
+          original_caption: scrapedReel.caption || '',
+          hashtags: scrapedReel.hashtags.join(' '),
           user_id: user.id,
-          direct_video_url: apifyReel.videoUrl, // Salvar URL direta para evitar downloads bloqueados na VPS
+          direct_video_url: scrapedReel.videoUrl, // Salvar URL direta para evitar downloads bloqueados na VPS
         });
 
         newReelIds.push(newReel.id);
         newCount++;
       }
-    } else if (platform === 'instagram' && !isApifyConfigured()) {
-      // Instagram sem Apify cai em yt-dlp → o IP do VPS é bloqueado com HTTP 429.
+    } else if (platform === 'instagram' && !isBrightDataConfigured()) {
+      // Instagram sem Bright Data cai em yt-dlp → o IP do VPS é bloqueado com HTTP 429.
       // Em vez de martelar o Instagram, devolvemos um erro acionável.
       return NextResponse.json(
         {
           success: false,
           error:
-            'A descoberta do Instagram exige a integração Apify. Configure APIFY_TOKEN no servidor para varrer perfis sem o bloqueio (HTTP 429) do Instagram em IPs de VPS.',
+            'A descoberta do Instagram exige a integração Bright Data. Configure BRIGHTDATA_API_TOKEN no servidor para varrer perfis sem o bloqueio (HTTP 429) do Instagram em IPs de VPS.',
         },
         { status: 503 }
       );
