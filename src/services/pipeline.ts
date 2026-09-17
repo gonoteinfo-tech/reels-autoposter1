@@ -18,7 +18,7 @@ import {
   getLastPublishedAt,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, randomSleep } from './instagram-downloader';
-import { discoverReelsApify, fetchSingleReelApify, isApifyConfigured } from './apify-discoverer';
+import { discoverReelsBrightData, fetchSingleReelBrightData, isBrightDataConfigured } from './brightdata-discoverer';
 import { addLogoToVideo } from './video-processor';
 import { uploadVideo, generateR2Key } from './storage';
 import { publishReel as publishToInstagram } from './instagram-publisher';
@@ -109,30 +109,30 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       let filePath: string;
       let metadata: { title?: string; description?: string; duration?: number };
 
-      // 1ª tentativa: URL direta da Apify (descoberta automática de perfil)
+      // 1ª tentativa: URL direta da Bright Data (descoberta automática de perfil)
       let directUrl = reel!.direct_video_url ?? undefined;
 
-      // 2ª tentativa: buscar URL direta via Apify para reels adicionados manualmente
+      // 2ª tentativa: buscar URL direta via Bright Data para reels adicionados manualmente
       const isInstagramUrl = reel!.instagram_url.includes('instagram.com');
-      if (!directUrl && isInstagramUrl && isApifyConfigured()) {
-        console.log(`🤖 [Apify] Buscando URL direta para reel #${reelId} adicionado manualmente...`);
+      if (!directUrl && isInstagramUrl && isBrightDataConfigured()) {
+        console.log(`🌐 [Bright Data] Buscando URL direta para reel #${reelId} adicionado manualmente...`);
         try {
-          const apifyInfo = await fetchSingleReelApify(reel!.instagram_url);
-          if (apifyInfo?.videoUrl) {
-            directUrl = apifyInfo.videoUrl;
+          const scrapedInfo = await fetchSingleReelBrightData(reel!.instagram_url);
+          if (scrapedInfo?.videoUrl) {
+            directUrl = scrapedInfo.videoUrl;
             // Guardar a legenda da FONTE em original_caption (caption fica vazio p/ a IA reescrever)
-            if (!reel!.original_caption && apifyInfo.caption) {
+            if (!reel!.original_caption && scrapedInfo.caption) {
               updateReel(reelId, {
-                hashtags: apifyInfo.hashtags.join(' '),
-                original_caption: apifyInfo.caption,
+                hashtags: scrapedInfo.hashtags.join(' '),
+                original_caption: scrapedInfo.caption,
               });
               reel = getReelById(reelId)!;
             }
-            console.log(`🤖 [Apify] URL direta obtida com sucesso para reel #${reelId}`);
+            console.log(`🌐 [Bright Data] URL direta obtida com sucesso para reel #${reelId}`);
           }
-        } catch (apifyErr) {
-          const apifyMsg = apifyErr instanceof Error ? apifyErr.message : String(apifyErr);
-          console.warn(`⚠️ [Apify] Falha ao buscar URL direta: ${apifyMsg}. Usando fallback yt-dlp.`);
+        } catch (scrapeErr) {
+          const scrapeMsg = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr);
+          console.warn(`⚠️ [Bright Data] Falha ao buscar URL direta: ${scrapeMsg}. Usando fallback yt-dlp.`);
         }
       }
 
@@ -368,7 +368,7 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
     for (const source of activeSources) {
       if (source.username === 'manual') continue;
 
-      // Limitar a frequência de descoberta automática (economiza crédito da Apify).
+      // Limitar a frequência de descoberta automática (economiza crédito da Bright Data).
       // Configurável via discovery_interval_minutes (padrão 6h) — independente do ciclo do cron.
       if (!forceDiscovery && source.last_checked_at) {
         try {
@@ -389,17 +389,17 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
       try {
         console.log(`📥 [Usuário #${user.id}] Descobrindo de ${platform}: @${source.username}...`);
 
-        // ── Instagram: usar Apify se configurado (sem cookies, sem bloqueio de VPS) ──
-        if (platform === 'instagram' && isApifyConfigured()) {
-          console.log(`🤖 [Apify] Usando Apify para descoberta de @${source.username}`);
+        // ── Instagram: usar Bright Data se configurado (sem cookies, sem bloqueio de VPS) ──
+        if (platform === 'instagram' && isBrightDataConfigured()) {
+          console.log(`🌐 [Bright Data] Usando Bright Data para descoberta de @${source.username}`);
 
-          const apifyReels = await discoverReelsApify(source.username, discoveryLimit);
+          const scrapedReels = await discoverReelsBrightData(source.username, discoveryLimit);
           let newCount = 0;
 
-          for (const apifyReel of apifyReels) {
-            const reelUrl = apifyReel.url;
+          for (const scrapedReel of scrapedReels) {
+            const reelUrl = scrapedReel.url;
             const existing = getReelByUrl(reelUrl, user.id)
-              || (apifyReel.id ? getReelByInstagramId(apifyReel.id, user.id) : null);
+              || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, user.id) : null);
             if (existing) continue;
 
             // Criar registro no banco com a URL direta do vídeo embutida no campo caption
@@ -408,14 +408,14 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
               source_id: source.id,
               source_username: source.username,
               instagram_url: reelUrl,
-              instagram_id: apifyReel.id,
+              instagram_id: scrapedReel.id,
               // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
               caption: '',
-              original_caption: apifyReel.caption || '',
-              hashtags: apifyReel.hashtags.join(' '),
+              original_caption: scrapedReel.caption || '',
+              hashtags: scrapedReel.hashtags.join(' '),
               user_id: user.id,
               // Campo extra para o pipeline de download usar URL direta
-              direct_video_url: apifyReel.videoUrl,
+              direct_video_url: scrapedReel.videoUrl,
             });
 
             newCount++;
@@ -423,7 +423,7 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
           }
 
           updateSourceLastChecked(source.id);
-          console.log(`🤖 [Apify] @${source.username}: ${newCount} novos reels descobertos`);
+          console.log(`🌐 [Bright Data] @${source.username}: ${newCount} novos reels descobertos`);
 
           // Jitter entre perfis para parecer comportamento humano
           if (activeSources.indexOf(source) < activeSources.length - 1) {
@@ -432,10 +432,10 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
           continue; // Próximo source
         }
 
-        // ── Instagram sem Apify: pular para não tomar HTTP 429 do IP do VPS ──
-        if (platform === 'instagram' && !isApifyConfigured()) {
+        // ── Instagram sem Bright Data: pular para não tomar HTTP 429 do IP do VPS ──
+        if (platform === 'instagram' && !isBrightDataConfigured()) {
           console.warn(
-            `⚠️ [Usuário #${user.id}] @${source.username}: descoberta do Instagram ignorada — configure APIFY_TOKEN (yt-dlp é bloqueado com HTTP 429 em IPs de VPS).`
+            `⚠️ [Usuário #${user.id}] @${source.username}: descoberta do Instagram ignorada — configure BRIGHTDATA_API_TOKEN (yt-dlp é bloqueado com HTTP 429 em IPs de VPS).`
           );
           updateSourceLastChecked(source.id);
           continue;
