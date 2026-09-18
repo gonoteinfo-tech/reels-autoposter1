@@ -13,6 +13,26 @@ const getGemini = (): GoogleGenAI | null => {
   return new GoogleGenAI({ apiKey });
 };
 
+/**
+ * Tempo máximo (ms) de cada chamada de IA. A legenda é gerada dentro da etapa de
+ * download, então uma chamada presa trava o pipeline inteiro.
+ */
+const AI_TIMEOUT_MS = Number(process.env.AI_CAPTION_TIMEOUT_MS) > 0
+  ? Number(process.env.AI_CAPTION_TIMEOUT_MS)
+  : 45000;
+
+/**
+ * Rejeita se a promessa não resolver dentro do prazo — rede de segurança além do
+ * timeout dos SDKs (o do Gemini refaz tentativas por até 1 hora por padrão).
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} não respondeu em ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /** Um provedor de IA capaz de devolver a resposta em JSON para um par de prompts */
 interface CaptionProvider {
   name: string;
@@ -49,7 +69,7 @@ function getCaptionProviders(): CaptionProvider[] {
               required: ['legenda', 'hashtags'],
             },
           },
-        });
+        }, { timeout: AI_TIMEOUT_MS, maxRetries: 1 });
         return interaction.output_text;
       },
     });
@@ -69,7 +89,7 @@ function getCaptionProviders(): CaptionProvider[] {
           ],
           response_format: { type: 'json_object' },
           temperature: 0.5,
-        });
+        }, { timeout: AI_TIMEOUT_MS, maxRetries: 1 });
         return response.choices[0].message.content ?? undefined;
       },
     });
@@ -235,7 +255,12 @@ Responda somente com um JSON no formato:
   for (const provider of providers) {
     try {
       console.log(`🤖 Solicitando reescrita de legenda via ${provider.name}...`);
-      const content = (await provider.generate(systemPrompt, userPrompt))?.trim();
+      // Prazo total um pouco maior que o dos SDKs, para cobrir a tentativa extra
+      const content = (await withTimeout(
+        provider.generate(systemPrompt, userPrompt),
+        AI_TIMEOUT_MS * 2 + 5000,
+        provider.name
+      ))?.trim();
       if (!content) throw new Error('resposta vazia');
 
       const parsed = JSON.parse(content) as { legenda?: unknown; hashtags?: unknown };

@@ -53,6 +53,12 @@ const caption =
 console.log('📝 Legenda de teste:', caption);
 console.log('');
 
+// Mostra que o script está vivo enquanto espera a resposta
+const startedAt = Date.now();
+const ticker = setInterval(() => {
+  console.log(`   ...aguardando o Gemini (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+}, 10000);
+
 try {
   const ai = new GoogleGenAI({ apiKey });
   const interaction = await ai.interactions.create({
@@ -72,16 +78,18 @@ try {
         required: ['legenda', 'hashtags'],
       },
     },
-  });
+  }, { timeout: 45000, maxRetries: 1 });
 
+  clearInterval(ticker);
   const parsed = JSON.parse(interaction.output_text || '{}');
-  console.log('✅ Gemini respondeu!');
+  console.log(`✅ Gemini respondeu em ${Math.round((Date.now() - startedAt) / 1000)}s!`);
   console.log('');
   console.log('Legenda reescrita:', parsed.legenda);
   console.log('Hashtags:', (parsed.hashtags || []).join(' '));
   console.log('');
   console.log('🏁 Diagnóstico concluído!');
 } catch (err) {
+  clearInterval(ticker);
   console.error('❌ Erro ao chamar o Gemini:', err?.message || err);
   console.error('   Detalhes:', JSON.stringify(err?.body ?? err?.error ?? {}, null, 2));
   process.exit(1);
