@@ -165,6 +165,23 @@ async function execYtDlpResilient(
 }
 
 /**
+ * Indica se há cookies de verdade para o yt-dlp: um arquivo de cookies existente ou
+ * um navegador definido explicitamente. O padrão "chrome" não conta — numa VPS sem
+ * navegador ele não autentica nada.
+ */
+export function hasCookiesConfigured(): boolean {
+  const candidates = [
+    process.env.COOKIES_FILE
+      ? (path.isAbsolute(process.env.COOKIES_FILE) ? process.env.COOKIES_FILE : path.join(process.cwd(), process.env.COOKIES_FILE))
+      : null,
+    path.join(process.cwd(), 'cookies.txt'),
+    path.join(process.cwd(), 'data', 'cookies.txt'),
+  ];
+  if (candidates.some((file) => file && fs.existsSync(file))) return true;
+  return !!process.env.COOKIES_BROWSER && process.env.COOKIES_BROWSER !== 'none';
+}
+
+/**
  * Obtém os argumentos de cookies para o yt-dlp.
  * Prioriza COOKIES_FILE ou cookies.txt local, e depois COOKIES_BROWSER.
  */
