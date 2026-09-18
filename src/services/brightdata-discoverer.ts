@@ -352,17 +352,28 @@ export async function testBrightDataConnection(): Promise<{ ok: boolean; user?: 
 }
 
 /**
+ * Traduz o erro que a Bright Data devolve para um post num motivo acionável.
+ * "Post isn't available" costuma ser post com restrição (conteúdo sensível ou de idade),
+ * privado ou removido — o Instagram só mostra esses posts para usuários logados.
+ */
+function describePostError(error: string): string {
+  if (/isn.?t available|not available|unavailable/i.test(error)) {
+    return `post indisponível sem login ("${error}") — provavelmente conteúdo sensível/restrito por idade, conta privada ou post removido`;
+  }
+  return error;
+}
+
+/**
  * Obtém a URL direta do vídeo de um reel específico usando a Bright Data.
- * Usado quando um reel foi adicionado manualmente por URL (sem passar pela descoberta de perfil).
+ * Usado quando o reel não tem URL direta (adicionado manualmente) ou quando ela expirou.
  *
  * @param reelUrl URL do reel do Instagram (ex: https://www.instagram.com/reel/ABC123/)
- * @returns Dados do reel ou null se não encontrado (o pipeline cai no fallback yt-dlp)
+ * @returns Dados do reel com a URL direta do vídeo
+ * @throws Com o motivo, se a Bright Data não estiver configurada ou não devolver o vídeo
  */
-export async function fetchSingleReelBrightData(
-  reelUrl: string
-): Promise<BrightDataReelInfo | null> {
+export async function fetchSingleReelBrightData(reelUrl: string): Promise<BrightDataReelInfo> {
   if (!isBrightDataConfigured()) {
-    return null;
+    throw new Error('BRIGHTDATA_API_TOKEN não configurado');
   }
 
   // Normalizar a URL — remover parâmetros de rastreamento (?igsh=...)
@@ -381,26 +392,22 @@ export async function fetchSingleReelBrightData(
     include_errors: 'true',
   }).toString();
 
-  try {
-    const items = await runCollection(query, [{ url: cleanUrl }], getSnapshotTimeoutMs(120000));
+  const items = await runCollection(query, [{ url: cleanUrl }], getSnapshotTimeoutMs(180000));
 
-    if (items.length === 0) {
-      console.warn(`⚠️ [Bright Data] Nenhum resultado para: ${cleanUrl}`);
-      return null;
-    }
-
-    const reel = mapReel(items[0], '');
-    if (!reel) {
-      console.warn(`⚠️ [Bright Data] Item retornado sem video_url para: ${cleanUrl}`);
-      return null;
-    }
-
-    console.log(`🌐 [Bright Data] URL direta obtida para reel ${reel.id} ✅`);
-    return reel;
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.warn(`⚠️ [Bright Data] Falha ao buscar reel individual (${cleanUrl}): ${msg}`);
-    // Retornar null para que o pipeline use o fallback (yt-dlp)
-    return null;
+  if (items.length === 0) {
+    throw new Error('a Bright Data não devolveu nenhum resultado');
   }
+
+  const first = items[0];
+  if (first.error || first.warning) {
+    throw new Error(describePostError(String(first.error || first.warning)));
+  }
+
+  const reel = mapReel(first, '');
+  if (!reel) {
+    throw new Error('a Bright Data devolveu o post sem video_url (pode não ser um vídeo)');
+  }
+
+  console.log(`🌐 [Bright Data] URL direta obtida para reel ${reel.id} ✅`);
+  return reel;
 }
