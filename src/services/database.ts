@@ -213,6 +213,14 @@ export function initDatabase(): void {
     }
   }
 
+  // 4.1 Coleta assíncrona da Bright Data: snapshot pendente por perfil-fonte
+  const spColumnsNow = database.prepare("PRAGMA table_info(source_profiles)").all() as { name: string }[];
+  if (!spColumnsNow.some(c => c.name === 'pending_snapshot_id')) {
+    database.exec("ALTER TABLE source_profiles ADD COLUMN pending_snapshot_id TEXT");
+    database.exec("ALTER TABLE source_profiles ADD COLUMN pending_snapshot_at TEXT");
+    console.log('💾 Campos de coleta pendente adicionados à tabela source_profiles');
+  }
+
   // 5. Migrar/Criar tabela de reels
   const reelsTableExists = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reels'").get();
   if (!reelsTableExists) {
@@ -662,6 +670,18 @@ export function updateSourceLastChecked(id: number): void {
   database.prepare(`
     UPDATE source_profiles SET last_checked_at = datetime('now') WHERE id = ?
   `).run(id);
+}
+
+/**
+ * Registra (ou limpa, com null) a coleta da Bright Data em andamento de um perfil-fonte.
+ */
+export function setSourcePendingSnapshot(id: number, snapshotId: string | null): void {
+  const database = getDb();
+  database.prepare(`
+    UPDATE source_profiles
+    SET pending_snapshot_id = ?, pending_snapshot_at = CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END
+    WHERE id = ?
+  `).run(snapshotId, snapshotId, id);
 }
 
 /**

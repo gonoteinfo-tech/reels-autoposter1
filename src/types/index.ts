@@ -27,6 +27,9 @@ export interface SourceProfile {
   created_at: string;
   last_checked_at: string | null;
   reels_count: number;
+  /** Coleta da Bright Data disparada e ainda não recolhida (descoberta assíncrona) */
+  pending_snapshot_id?: string | null;
+  pending_snapshot_at?: string | null;
 }
 
 /** Estágio do pipeline de processamento */

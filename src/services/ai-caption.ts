@@ -19,7 +19,18 @@ const getGemini = (): GoogleGenAI | null => {
  */
 const AI_TIMEOUT_MS = Number(process.env.AI_CAPTION_TIMEOUT_MS) > 0
   ? Number(process.env.AI_CAPTION_TIMEOUT_MS)
-  : 45000;
+  : 30000;
+
+/**
+ * Depois de uma falha, o provedor fica em pausa por este tempo (ms) e os próximos
+ * reels vão direto para a reserva, em vez de cada um esperar o erro de novo.
+ */
+const AI_COOLDOWN_MS = (Number(process.env.AI_CAPTION_COOLDOWN_MIN) > 0
+  ? Number(process.env.AI_CAPTION_COOLDOWN_MIN)
+  : 10) * 60000;
+
+/** Até quando (timestamp) cada provedor está em pausa, por chave do provedor */
+const providerCooldownUntil = new Map<string, number>();
 
 /**
  * Rejeita se a promessa não resolver dentro do prazo — rede de segurança além do
@@ -35,6 +46,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 /** Um provedor de IA capaz de devolver a resposta em JSON para um par de prompts */
 interface CaptionProvider {
+  /** Chave estável do provedor (usada na pausa após falha) */
+  key: string;
   name: string;
   generate: (systemPrompt: string, userPrompt: string) => Promise<string | undefined>;
 }
@@ -50,6 +63,7 @@ function getCaptionProviders(): CaptionProvider[] {
   if (gemini) {
     const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
     providers.push({
+      key: 'gemini',
       name: `Gemini (${model})`,
       generate: async (systemPrompt, userPrompt) => {
         // Modelos Gemini 3 não aceitam temperature; o formato JSON é garantido pelo schema
@@ -69,7 +83,7 @@ function getCaptionProviders(): CaptionProvider[] {
               required: ['legenda', 'hashtags'],
             },
           },
-        }, { timeout: AI_TIMEOUT_MS, maxRetries: 1 });
+        }, { timeout: AI_TIMEOUT_MS, maxRetries: 0 });
         return interaction.output_text;
       },
     });
@@ -79,6 +93,7 @@ function getCaptionProviders(): CaptionProvider[] {
   if (openai) {
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     providers.push({
+      key: 'openai',
       name: `OpenAI (${model})`,
       generate: async (systemPrompt, userPrompt) => {
         const response = await openai.chat.completions.create({
@@ -89,7 +104,7 @@ function getCaptionProviders(): CaptionProvider[] {
           ],
           response_format: { type: 'json_object' },
           temperature: 0.5,
-        }, { timeout: AI_TIMEOUT_MS, maxRetries: 1 });
+        }, { timeout: AI_TIMEOUT_MS, maxRetries: 0 });
         return response.choices[0].message.content ?? undefined;
       },
     });
@@ -252,13 +267,23 @@ Responda somente com um JSON no formato:
   const userPrompt = `LEGENDA ORIGINAL:\n\n${originalCaption || 'Sem legenda original.'}\n\nHASHTAGS DA FONTE (use apenas se forem sobre o assunto):\n${sourceHashtags || 'Nenhuma.'}`;
 
   // Tenta cada provedor em ordem; se o principal falhar, cai para o próximo
-  for (const provider of providers) {
+  for (const [index, provider] of providers.entries()) {
+    const isLast = index === providers.length - 1;
+
+    // Provedor em pausa por falha recente: pula direto para a reserva (o último nunca é pulado)
+    const pausedUntil = providerCooldownUntil.get(provider.key) ?? 0;
+    if (!isLast && Date.now() < pausedUntil) {
+      console.log(`⏭️ ${provider.name} em pausa por falha recente (mais ${Math.ceil((pausedUntil - Date.now()) / 60000)} min) — usando a reserva.`);
+      continue;
+    }
+
     try {
       console.log(`🤖 Solicitando reescrita de legenda via ${provider.name}...`);
-      // Prazo total um pouco maior que o dos SDKs, para cobrir a tentativa extra
+      const startedAt = Date.now();
+      // Rede de segurança um pouco acima do timeout do SDK
       const content = (await withTimeout(
         provider.generate(systemPrompt, userPrompt),
-        AI_TIMEOUT_MS * 2 + 5000,
+        AI_TIMEOUT_MS + 5000,
         provider.name
       ))?.trim();
       if (!content) throw new Error('resposta vazia');
@@ -271,7 +296,8 @@ Responda somente com um JSON no formato:
         ? parsed.hashtags.map((tag) => sanitizeHashtag(String(tag))).filter((tag): tag is string => !!tag)
         : [];
 
-      console.log(`🤖 Legenda reescrita via ${provider.name} (${tags.length} hashtags sugeridas).`);
+      providerCooldownUntil.delete(provider.key);
+      console.log(`🤖 Legenda reescrita via ${provider.name} em ${((Date.now() - startedAt) / 1000).toFixed(1)}s (${tags.length} hashtags sugeridas).`);
       return ensureMinimumHashtags([rewritten, tags.join(' ')].filter(Boolean).join('\n\n'), sourceHashtags, 6);
     } catch (error) {
       // O SDK do Gemini guarda a mensagem útil do Google em `body`, não em `message`
@@ -279,6 +305,10 @@ Responda somente com um JSON no formato:
       const detail = typeof body === 'string' ? body.match(/"message":\s*"([^"]+)"/)?.[1] : undefined;
       const msg = detail || (error instanceof Error ? error.message : String(error));
       console.error(`❌ Erro ao reescrever legenda via ${provider.name}: ${msg}`);
+      if (!isLast) {
+        providerCooldownUntil.set(provider.key, Date.now() + AI_COOLDOWN_MS);
+        console.warn(`⏸️ ${provider.name} em pausa por ${AI_COOLDOWN_MS / 60000} min — os próximos reels vão direto para a reserva.`);
+      }
     }
   }
 

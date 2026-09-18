@@ -16,14 +16,18 @@ import {
   getAllUsers,
   getUserById,
   getLastPublishedAt,
+  setSourcePendingSnapshot,
 } from './database';
-import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, randomSleep } from './instagram-downloader';
-import { discoverReelsBrightData, fetchSingleReelBrightData, isBrightDataConfigured } from './brightdata-discoverer';
+import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId } from './instagram-downloader';
+import { collectReelsDiscovery, fetchSingleReelBrightData, isBrightDataConfigured, startReelsDiscovery } from './brightdata-discoverer';
 import { addLogoToVideo } from './video-processor';
 import { uploadVideo, generateR2Key } from './storage';
 import { publishReel as publishToInstagram } from './instagram-publisher';
 import { publishReelToPage } from './facebook-publisher';
 import { rewriteCaption, ensureMinimumHashtags } from './ai-caption';
+
+/** Após este tempo (min) sem resultado, uma coleta pendente da Bright Data é descartada e disparada de novo */
+const BRIGHTDATA_PENDING_MAX_MINUTES = 30;
 
 /** Diretórios de trabalho do pipeline */
 const DOWNLOADS_DIR = path.join(process.cwd(), 'data', 'downloads');
@@ -368,6 +372,61 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
     for (const source of activeSources) {
       if (source.username === 'manual') continue;
 
+      const platform = (source as any).platform || 'instagram';
+
+      // ── Bright Data: recolher coleta disparada em ciclo anterior (uma consulta, sem esperar) ──
+      if (platform === 'instagram' && isBrightDataConfigured() && source.pending_snapshot_id) {
+        try {
+          const scrapedReels = await collectReelsDiscovery(source.pending_snapshot_id, source.username, discoveryLimit);
+
+          if (!scrapedReels) {
+            const startedAt = new Date((source.pending_snapshot_at || '').replace(' ', 'T') + 'Z').getTime();
+            const ageMin = (Date.now() - startedAt) / 60000;
+            if (Number.isFinite(ageMin) && ageMin > BRIGHTDATA_PENDING_MAX_MINUTES) {
+              console.warn(`⚠️ [Bright Data] @${source.username}: coleta ${source.pending_snapshot_id} sem resultado há ${ageMin.toFixed(0)} min — descartada; será disparada de novo.`);
+              setSourcePendingSnapshot(source.id, null);
+            } else {
+              console.log(`🌐 [Bright Data] @${source.username}: coleta ainda em andamento — resultado no próximo ciclo`);
+            }
+            continue;
+          }
+
+          let newCount = 0;
+          for (const scrapedReel of scrapedReels) {
+            const reelUrl = scrapedReel.url;
+            const existing = getReelByUrl(reelUrl, user.id)
+              || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, user.id) : null);
+            if (existing) continue;
+
+            createReel({
+              source_id: source.id,
+              source_username: source.username,
+              instagram_url: reelUrl,
+              instagram_id: scrapedReel.id,
+              // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
+              caption: '',
+              original_caption: scrapedReel.caption || '',
+              hashtags: scrapedReel.hashtags.join(' '),
+              user_id: user.id,
+              // URL direta do vídeo: o download não precisa de cookies
+              direct_video_url: scrapedReel.videoUrl,
+            });
+
+            newCount++;
+            totalDiscovered++;
+          }
+
+          setSourcePendingSnapshot(source.id, null);
+          updateSourceLastChecked(source.id);
+          console.log(`🌐 [Bright Data] @${source.username}: ${newCount} novos reels descobertos`);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ [Bright Data] @${source.username}: falha ao recolher a coleta (${msg}) — será disparada de novo.`);
+          setSourcePendingSnapshot(source.id, null);
+        }
+        continue;
+      }
+
       // Limitar a frequência de descoberta automática (economiza crédito da Bright Data).
       // Configurável via discovery_interval_minutes (padrão 6h) — independente do ciclo do cron.
       if (!forceDiscovery && source.last_checked_at) {
@@ -384,51 +443,13 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
         }
       }
 
-      const platform = (source as any).platform || 'instagram';
-
       try {
         console.log(`📥 [Usuário #${user.id}] Descobrindo de ${platform}: @${source.username}...`);
 
-        // ── Instagram: usar Bright Data se configurado (sem cookies, sem bloqueio de VPS) ──
+        // ── Instagram: disparar coleta na Bright Data e seguir — o resultado é recolhido no próximo ciclo ──
         if (platform === 'instagram' && isBrightDataConfigured()) {
-          console.log(`🌐 [Bright Data] Usando Bright Data para descoberta de @${source.username}`);
-
-          const scrapedReels = await discoverReelsBrightData(source.username, discoveryLimit);
-          let newCount = 0;
-
-          for (const scrapedReel of scrapedReels) {
-            const reelUrl = scrapedReel.url;
-            const existing = getReelByUrl(reelUrl, user.id)
-              || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, user.id) : null);
-            if (existing) continue;
-
-            // Criar registro no banco com a URL direta do vídeo embutida no campo caption
-            // (usada pelo pipeline de download para evitar cookies)
-            createReel({
-              source_id: source.id,
-              source_username: source.username,
-              instagram_url: reelUrl,
-              instagram_id: scrapedReel.id,
-              // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
-              caption: '',
-              original_caption: scrapedReel.caption || '',
-              hashtags: scrapedReel.hashtags.join(' '),
-              user_id: user.id,
-              // Campo extra para o pipeline de download usar URL direta
-              direct_video_url: scrapedReel.videoUrl,
-            });
-
-            newCount++;
-            totalDiscovered++;
-          }
-
-          updateSourceLastChecked(source.id);
-          console.log(`🌐 [Bright Data] @${source.username}: ${newCount} novos reels descobertos`);
-
-          // Jitter entre perfis para parecer comportamento humano
-          if (activeSources.indexOf(source) < activeSources.length - 1) {
-            await randomSleep(2000, 8000);
-          }
+          const snapshotId = await startReelsDiscovery(source.username, discoveryLimit);
+          setSourcePendingSnapshot(source.id, snapshotId);
           continue; // Próximo source
         }
 

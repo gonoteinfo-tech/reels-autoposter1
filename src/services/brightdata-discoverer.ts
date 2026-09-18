@@ -88,17 +88,12 @@ async function brightDataFetch(
 }
 
 /**
- * Dispara uma coleta e aguarda o snapshot ficar pronto, devolvendo os registros.
+ * Dispara uma coleta na Bright Data e devolve o snapshot_id, sem esperar o resultado.
  *
  * @param query Query string do /trigger (dataset_id, type, discover_by, ...)
  * @param input Corpo da coleta (array de entradas)
- * @param timeoutMs Tempo máximo de espera pelo snapshot
  */
-async function runCollection(
-  query: string,
-  input: Record<string, unknown>[],
-  timeoutMs: number
-): Promise<Record<string, any>[]> {
+async function triggerCollection(query: string, input: Record<string, unknown>[]): Promise<string> {
   const triggerRes = await brightDataFetch(`/datasets/v3/trigger?${query}`, {
     method: 'POST',
     body: JSON.stringify(input),
@@ -113,40 +108,60 @@ async function runCollection(
     throw new Error(`Bright Data não retornou snapshot_id${trigger.error ? `: ${trigger.error}` : ''}`);
   }
 
-  const snapshotId = trigger.snapshot_id;
+  return trigger.snapshot_id;
+}
+
+/**
+ * Consulta uma coleta uma única vez.
+ *
+ * @returns Os registros, se o snapshot estiver pronto; null se ainda estiver em andamento
+ * @throws Se a coleta falhou ou foi cancelada
+ */
+async function checkCollection(snapshotId: string): Promise<Record<string, any>[] | null> {
+  const progressRes = await brightDataFetch(`/datasets/v3/progress/${snapshotId}`, {}, 30000);
+  if (!progressRes.ok) {
+    throw new Error(describeHttpError(progressRes.status, await progressRes.text()));
+  }
+
+  const progress = (await progressRes.json()) as { status?: string };
+
+  if (progress.status === 'failed' || progress.status === 'canceled') {
+    throw new Error(`Coleta da Bright Data terminou com status "${progress.status}".`);
+  }
+  if (progress.status !== 'ready') {
+    return null;
+  }
+
+  const snapshotRes = await brightDataFetch(`/datasets/v3/snapshot/${snapshotId}?format=json`, {}, 120000);
+  if (!snapshotRes.ok) {
+    throw new Error(describeHttpError(snapshotRes.status, await snapshotRes.text()));
+  }
+
+  const data = await snapshotRes.json();
+  return Array.isArray(data) ? (data as Record<string, any>[]) : [];
+}
+
+/**
+ * Dispara uma coleta e aguarda o snapshot ficar pronto, devolvendo os registros.
+ * Usado nos fluxos em que o usuário está esperando a resposta (varredura manual, reel avulso).
+ *
+ * @param query Query string do /trigger (dataset_id, type, discover_by, ...)
+ * @param input Corpo da coleta (array de entradas)
+ * @param timeoutMs Tempo máximo de espera pelo snapshot
+ */
+async function runCollection(
+  query: string,
+  input: Record<string, unknown>[],
+  timeoutMs: number
+): Promise<Record<string, any>[]> {
+  const snapshotId = await triggerCollection(query, input);
   console.log(`🌐 [Bright Data] Coleta iniciada (snapshot ${snapshotId}), aguardando...`);
 
-  // ── Polling do progresso ──
   const deadline = Date.now() + timeoutMs;
-  const pollIntervalMs = 5000;
-
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-
-    const progressRes = await brightDataFetch(`/datasets/v3/progress/${snapshotId}`, {}, 30000);
-    if (!progressRes.ok) {
-      throw new Error(describeHttpError(progressRes.status, await progressRes.text()));
-    }
-
-    const progress = (await progressRes.json()) as { status?: string };
-
-    if (progress.status === 'ready') {
-      const snapshotRes = await brightDataFetch(
-        `/datasets/v3/snapshot/${snapshotId}?format=json`,
-        {},
-        120000
-      );
-      if (!snapshotRes.ok) {
-        throw new Error(describeHttpError(snapshotRes.status, await snapshotRes.text()));
-      }
-
-      const data = await snapshotRes.json();
-      return Array.isArray(data) ? (data as Record<string, any>[]) : [];
-    }
-
-    if (progress.status === 'failed' || progress.status === 'canceled') {
-      throw new Error(`Coleta da Bright Data terminou com status "${progress.status}".`);
-    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    const items = await checkCollection(snapshotId);
+    if (items) return items;
   }
 
   throw new Error(
@@ -207,8 +222,40 @@ function mapReel(item: Record<string, any>, fallbackUsername: string): BrightDat
   };
 }
 
+/** Query da descoberta de reels por URL de perfil */
+function discoveryQuery(): string {
+  return new URLSearchParams({
+    dataset_id: getReelsDataset(),
+    include_errors: 'true',
+    type: 'discover_new',
+    discover_by: 'url',
+  }).toString();
+}
+
+/** Username limpo e URL do perfil */
+function profileInput(username: string, limit: number) {
+  const cleanUsername = username.replace(/^@/, '').trim();
+  return {
+    cleanUsername,
+    input: [{ url: `https://www.instagram.com/${cleanUsername}/`, num_of_posts: limit }],
+  };
+}
+
+/** Converte os registros crus em reels, respeitando o limite */
+function mapReels(items: Record<string, any>[], username: string, limit: number): BrightDataReelInfo[] {
+  const reels: BrightDataReelInfo[] = [];
+  for (const item of items) {
+    const reel = mapReel(item, username);
+    if (reel) reels.push(reel);
+    // A Bright Data pode devolver mais itens do que o solicitado
+    if (reels.length >= limit) break;
+  }
+  return reels;
+}
+
 /**
- * Descobre reels recentes de um perfil do Instagram usando a Bright Data.
+ * Descobre reels recentes de um perfil do Instagram usando a Bright Data,
+ * aguardando o resultado (fluxo síncrono — varredura manual).
  *
  * @param username Username do perfil Instagram
  * @param limit Número máximo de reels a descobrir
@@ -222,44 +269,55 @@ export async function discoverReelsBrightData(
     throw new Error('BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env');
   }
 
-  const cleanUsername = username.replace(/^@/, '').trim();
-  const profileUrl = `https://www.instagram.com/${cleanUsername}/`;
-
+  const { cleanUsername, input } = profileInput(username, limit);
   console.log(`🌐 [Bright Data] Descobrindo reels de @${cleanUsername} (limite: ${limit})...`);
 
-  const query = new URLSearchParams({
-    dataset_id: getReelsDataset(),
-    include_errors: 'true',
-    type: 'discover_new',
-    discover_by: 'url',
-  }).toString();
-
   try {
-    const items = await runCollection(
-      query,
-      [{ url: profileUrl, num_of_posts: limit }],
-      getSnapshotTimeoutMs(180000)
-    );
-
-    if (items.length === 0) {
-      console.log(`🌐 [Bright Data] Nenhum reel encontrado para @${cleanUsername}`);
-      return [];
-    }
-
-    const reels: BrightDataReelInfo[] = [];
-    for (const item of items) {
-      const reel = mapReel(item, cleanUsername);
-      if (reel) reels.push(reel);
-      // A Bright Data pode devolver mais itens do que o solicitado
-      if (reels.length >= limit) break;
-    }
-
+    const items = await runCollection(discoveryQuery(), input, getSnapshotTimeoutMs(180000));
+    const reels = mapReels(items, cleanUsername, limit);
     console.log(`🌐 [Bright Data] ${reels.length} reels com vídeo encontrados para @${cleanUsername}`);
     return reels;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(`❌ [Bright Data] Erro ao descobrir reels de @${cleanUsername}: ${msg}`);
   }
+}
+
+/**
+ * Dispara a descoberta de reels de um perfil sem esperar o resultado.
+ * O resultado é recolhido depois com collectReelsDiscovery (em outro ciclo do pipeline).
+ *
+ * @returns snapshot_id da coleta
+ */
+export async function startReelsDiscovery(username: string, limit: number = 10): Promise<string> {
+  if (!isBrightDataConfigured()) {
+    throw new Error('BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env');
+  }
+
+  const { cleanUsername, input } = profileInput(username, limit);
+  const snapshotId = await triggerCollection(discoveryQuery(), input);
+  console.log(`🌐 [Bright Data] Coleta de @${cleanUsername} disparada (snapshot ${snapshotId}) — resultado no próximo ciclo`);
+  return snapshotId;
+}
+
+/**
+ * Recolhe o resultado de uma descoberta disparada por startReelsDiscovery.
+ *
+ * @returns Os reels, se a coleta estiver pronta; null se ainda estiver em andamento
+ * @throws Se a coleta falhou ou foi cancelada
+ */
+export async function collectReelsDiscovery(
+  snapshotId: string,
+  username: string,
+  limit: number = 10
+): Promise<BrightDataReelInfo[] | null> {
+  const cleanUsername = username.replace(/^@/, '').trim();
+  const items = await checkCollection(snapshotId);
+  if (!items) return null;
+
+  const reels = mapReels(items, cleanUsername, limit);
+  console.log(`🌐 [Bright Data] ${reels.length} reels com vídeo recolhidos para @${cleanUsername} (snapshot ${snapshotId})`);
+  return reels;
 }
 
 /**
