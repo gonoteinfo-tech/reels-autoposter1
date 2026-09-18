@@ -19,7 +19,7 @@ import {
   setSourcePendingSnapshot,
   isVideoFileUsedByPendingReel,
 } from './database';
-import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId } from './instagram-downloader';
+import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, hasCookiesConfigured } from './instagram-downloader';
 import { collectReelsDiscovery, fetchSingleReelBrightData, isBrightDataConfigured, startReelsDiscovery } from './brightdata-discoverer';
 import { addLogoToVideo } from './video-processor';
 import { uploadVideo, generateR2Key } from './storage';
@@ -141,41 +141,65 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       let filePath: string;
       let metadata: { title?: string; description?: string; duration?: number };
 
-      // 1ª tentativa: URL direta da Bright Data (descoberta automática de perfil)
-      let directUrl = reel!.direct_video_url ?? undefined;
-
-      // 2ª tentativa: buscar URL direta via Bright Data para reels adicionados manualmente
       const isInstagramUrl = reel!.instagram_url.includes('instagram.com');
-      if (!directUrl && isInstagramUrl && isBrightDataConfigured()) {
-        console.log(`🌐 [Bright Data] Buscando URL direta para reel #${reelId} adicionado manualmente...`);
+      const canUseBrightData = isInstagramUrl && isBrightDataConfigured();
+      const reelIdForFile = reel!.instagram_id || String(reelId);
+      let brightDataError: string | undefined;
+
+      /** Busca na Bright Data uma URL direta nova para o vídeo e a guarda no reel */
+      const refreshDirectUrl = async (): Promise<string | undefined> => {
         try {
           const scrapedInfo = await fetchSingleReelBrightData(reel!.instagram_url);
-          if (scrapedInfo?.videoUrl) {
-            directUrl = scrapedInfo.videoUrl;
+          updateReel(reelId, {
+            direct_video_url: scrapedInfo.videoUrl,
             // Guardar a legenda da FONTE em original_caption (caption fica vazio p/ a IA reescrever)
-            if (!reel!.original_caption && scrapedInfo.caption) {
-              updateReel(reelId, {
-                hashtags: scrapedInfo.hashtags.join(' '),
-                original_caption: scrapedInfo.caption,
-              });
-              reel = getReelById(reelId)!;
-            }
-            console.log(`🌐 [Bright Data] URL direta obtida com sucesso para reel #${reelId}`);
-          }
+            ...(!reel!.original_caption && scrapedInfo.caption
+              ? { hashtags: scrapedInfo.hashtags.join(' '), original_caption: scrapedInfo.caption }
+              : {}),
+          });
+          reel = getReelById(reelId)!;
+          console.log(`🌐 [Bright Data] URL direta obtida com sucesso para reel #${reelId}`);
+          return scrapedInfo.videoUrl;
         } catch (scrapeErr) {
-          const scrapeMsg = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr);
-          console.warn(`⚠️ [Bright Data] Falha ao buscar URL direta: ${scrapeMsg}. Usando fallback yt-dlp.`);
+          brightDataError = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr);
+          console.warn(`⚠️ [Bright Data] Reel #${reelId}: não foi possível obter o vídeo — ${brightDataError}`);
+          return undefined;
         }
+      };
+
+      // 1ª tentativa: URL direta salva na descoberta; sem ela (reel manual), busca na Bright Data
+      let directUrl = reel!.direct_video_url ?? undefined;
+      const directUrlFromDiscovery = !!directUrl;
+      if (!directUrl && canUseBrightData) {
+        console.log(`🌐 [Bright Data] Buscando URL direta para reel #${reelId}...`);
+        directUrl = await refreshDirectUrl();
       }
 
       if (directUrl) {
         // Download por URL direta — sem cookies, sem bloqueio de VPS
-        const reelIdForFile = reel!.instagram_id || String(reelId);
-        filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reelIdForFile);
+        try {
+          filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reelIdForFile);
+        } catch (directErr) {
+          // As URLs do CDN do Instagram expiram: se a salva na descoberta falhou, busca uma nova e tenta de novo
+          if (!directUrlFromDiscovery || !canUseBrightData) throw directErr;
+          console.warn(`⚠️ Reel #${reelId}: URL direta falhou (provavelmente expirou) — buscando uma nova na Bright Data...`);
+          const freshUrl = await refreshDirectUrl();
+          if (!freshUrl) {
+            throw new Error(`URL direta do vídeo expirou e a Bright Data não devolveu uma nova: ${brightDataError}`);
+          }
+          filePath = await downloadFromDirectUrl(freshUrl, DOWNLOADS_DIR, reelIdForFile);
+        }
         metadata = { title: '', description: reel!.original_caption || reel!.caption || '', duration: 0 };
+      } else if (isInstagramUrl && !hasCookiesConfigured()) {
+        // Sem cookies o yt-dlp é sempre bloqueado no Instagram a partir do IP da VPS — nem tenta
+        throw new Error(
+          brightDataError
+            ? `Vídeo indisponível na Bright Data: ${brightDataError}.`
+            : 'Instagram exige a Bright Data (BRIGHTDATA_API_TOKEN) ou cookies para o yt-dlp — sem isso o IP da VPS é bloqueado.'
+        );
       } else {
-        // 3ª tentativa (fallback): yt-dlp com cookies (TikTok, YouTube, Facebook)
-        console.log(`⚠️ Reel #${reelId}: usando yt-dlp com cookies (fallback)`);
+        // Último recurso: yt-dlp (TikTok, YouTube, Facebook, ou Instagram com cookies)
+        console.log(`⚠️ Reel #${reelId}: usando yt-dlp (fallback)`);
         const result = await downloadReel(reel!.instagram_url, DOWNLOADS_DIR);
         filePath = result.filePath;
         metadata = result.metadata;

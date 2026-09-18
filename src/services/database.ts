@@ -847,6 +847,7 @@ export function updateReel(
       | 'ig_post_id'
       | 'fb_post_id'
       | 'published_at'
+      | 'direct_video_url'
     >
   >,
   userId?: number
