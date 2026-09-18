@@ -673,6 +673,20 @@ export function updateSourceLastChecked(id: number): void {
 }
 
 /**
+ * Indica se outro reel ainda não publicado usa o mesmo arquivo local
+ * (dois usuários com a mesma fonte compartilham o arquivo original baixado).
+ */
+export function isVideoFileUsedByPendingReel(filePath: string, exceptReelId: number): boolean {
+  const database = getDb();
+  const row = database.prepare(`
+    SELECT 1 FROM reels
+    WHERE id != ? AND stage != 'published' AND (local_path = ? OR processed_path = ?)
+    LIMIT 1
+  `).get(exceptReelId, filePath, filePath);
+  return !!row;
+}
+
+/**
  * Registra (ou limpa, com null) a coleta da Bright Data em andamento de um perfil-fonte.
  */
 export function setSourcePendingSnapshot(id: number, snapshotId: string | null): void {

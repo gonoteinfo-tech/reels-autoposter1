@@ -17,6 +17,7 @@ import {
   getUserById,
   getLastPublishedAt,
   setSourcePendingSnapshot,
+  isVideoFileUsedByPendingReel,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, hasCookiesConfigured } from './instagram-downloader';
 import { collectReelsDiscovery, fetchSingleReelBrightData, isBrightDataConfigured, startReelsDiscovery } from './brightdata-discoverer';
@@ -32,6 +33,33 @@ const BRIGHTDATA_PENDING_MAX_MINUTES = 30;
 /** Diretórios de trabalho do pipeline */
 const DOWNLOADS_DIR = path.join(process.cwd(), 'data', 'downloads');
 const PROCESSED_DIR = path.join(process.cwd(), 'data', 'processed');
+
+/**
+ * Apaga da VPS os arquivos locais de um reel já publicado (original e processado).
+ * A publicação usa a cópia no R2, então os arquivos locais não são mais necessários.
+ * Falhas aqui só geram aviso — nunca afetam a publicação.
+ */
+function removeLocalVideoFiles(reel: { id: number; local_path: string | null; processed_path: string | null }): void {
+  let freedBytes = 0;
+  for (const filePath of [reel.local_path, reel.processed_path]) {
+    if (!filePath) continue;
+    // Arquivo compartilhado com reel de outro usuário ainda na fila: não apagar
+    if (isVideoFileUsedByPendingReel(filePath, reel.id)) continue;
+    try {
+      if (fs.existsSync(filePath)) {
+        freedBytes += fs.statSync(filePath).size;
+        fs.unlinkSync(filePath);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`⚠️ Reel #${reel.id}: não foi possível apagar ${filePath}: ${msg}`);
+    }
+  }
+  updateReel(reel.id, { local_path: null, processed_path: null });
+  if (freedBytes > 0) {
+    console.log(`🧹 Reel #${reel.id}: arquivos locais apagados após a publicação (${(freedBytes / 1024 / 1024).toFixed(1)} MB liberados)`);
+  }
+}
 
 /**
  * Garante que os diretórios de trabalho existem.
@@ -355,6 +383,7 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
           stage: 'published',
           published_at: new Date().toISOString(),
         });
+        removeLocalVideoFiles(reelUpdated);
         return `Publicação concluída: ${publishMessages.join(' | ')}`;
       } else {
         throw new Error(`Nenhuma plataforma publicou com sucesso: ${publishMessages.join(' | ')}`);
