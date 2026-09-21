@@ -184,7 +184,9 @@ const STOPWORDS = new Set([
 
 /**
  * Reúne hashtags únicas no final, sem preencher com temas presumidos.
- * Se não houver contexto suficiente, impede a publicação com tags inventadas.
+ * Tenta chegar a `minCount` usando só o que o texto e a fonte sustentam; se não houver
+ * contexto suficiente, publica com as hashtags relevantes que existirem (sem inventar
+ * e sem bloquear o reel).
  */
 export function ensureMinimumHashtags(caption: string, sourceHashtags?: string, minCount = 6): string {
   const hashtagRegex = /#[\p{L}\p{N}_]+/gu;
@@ -216,8 +218,7 @@ export function ensureMinimumHashtags(caption: string, sourceHashtags?: string, 
   }
 
   if (tags.size < minCount) {
-    throw new Error('Contexto insuficiente para gerar pelo menos ' + minCount +
-      ' hashtags relevantes. Complete a legenda ou informe hashtags relacionadas ao vídeo.');
+    console.warn(`⚠️ Legenda com pouco contexto: ${tags.size} hashtag(s) relevante(s) em vez de ${minCount}. Publicando sem inventar hashtags.`);
   }
   return [body, [...tags.values()].join(' ')].filter(Boolean).join('\n\n');
 }
@@ -242,6 +243,14 @@ function sanitizeHashtag(raw: string): string | null {
  * @returns Legenda reescrita pela IA ou legenda original enriquecida com hashtags contextuais
  */
 export async function rewriteCaption(originalCaption: string, sourceHashtags?: string): Promise<string> {
+  // Legenda sem texto de verdade (vazia, só emojis ou só hashtags): não há o que reescrever,
+  // e mandar para a IA só abriria espaço para ela inventar um assunto
+  const captionText = (originalCaption || '').replace(/#[\p{L}\p{N}_]+/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  if (captionText.split(/\s+/).filter((word) => word.length >= 3).length < 3) {
+    console.log('📝 Reel sem legenda aproveitável — publicando sem reescrita, só com as hashtags da fonte.');
+    return ensureMinimumHashtags(originalCaption || '', sourceHashtags, 6);
+  }
+
   const providers = getCaptionProviders();
   if (providers.length === 0) {
     console.warn('⚠️ Nenhuma IA configurada (GEMINI_API_KEY / OPENAI_API_KEY) — a legenda NÃO será reescrita. Publicando a original com hashtags extraídas do texto.');
