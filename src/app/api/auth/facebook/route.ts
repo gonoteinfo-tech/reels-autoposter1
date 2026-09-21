@@ -1,9 +1,22 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 import { getLoggedInUser } from '@/services/auth';
+import {
+  FB_STATE_COOKIE,
+  buildFacebookAuthUrl,
+  createFacebookState,
+  isSecureRequest,
+} from '@/services/facebook-oauth';
 
+export const dynamic = 'force-dynamic';
+
+/**
+ * GET /api/auth/facebook
+ * Usuário já logado conectando (ou trocando) a página do Facebook/Instagram.
+ * Devolve a URL de autorização para o front redirecionar.
+ */
 export async function GET(request: Request) {
   try {
-    // Verificar se o usuário está logado
     const user = await getLoggedInUser();
     if (!user) {
       return NextResponse.json(
@@ -12,44 +25,18 @@ export async function GET(request: Request) {
       );
     }
 
-    const appId = process.env.FACEBOOK_APP_ID;
-    if (!appId) {
-      return NextResponse.json(
-        { success: false, error: 'FACEBOOK_APP_ID não configurado no servidor' },
-        { status: 500 }
-      );
-    }
+    // "state" aleatório guardado em cookie httpOnly e validado no callback (anti-CSRF)
+    const state = createFacebookState('connect');
+    const cookieStore = await cookies();
+    cookieStore.set(FB_STATE_COOKIE, state, {
+      httpOnly: true,
+      secure: isSecureRequest(request),
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 10, // 10 minutos
+    });
 
-    const host = request.headers.get('host') || new URL(request.url).host;
-    const referer = request.headers.get('referer');
-    let proto = request.headers.get('x-forwarded-proto') || 'http';
-    
-    if (referer && referer.startsWith('https://')) {
-      proto = 'https';
-    } else {
-      const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('192.168.') || host.startsWith('10.');
-      if (!isLocal) {
-        proto = 'https';
-      }
-    }
-    
-    const redirectUri = `${proto}://${host}/api/auth/facebook/callback`;
-
-    // Escopos necessários para publicação e leitura
-    const scopes = [
-      'pages_show_list',
-      'pages_read_engagement',
-      'pages_manage_posts',
-      'instagram_basic',
-      'instagram_content_publish'
-    ].join(',');
-
-    // Passamos o userId no parâmetro state para validação adicional se necessário
-    const authUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&scope=${scopes}&response_type=code&state=${user.id}`;
-
-    return NextResponse.json({ success: true, data: { authUrl } });
+    return NextResponse.json({ success: true, data: { authUrl: buildFacebookAuthUrl(request, 'connect', state) } });
   } catch (error) {
     console.error('❌ Erro ao gerar URL de autenticação do Facebook:', error);
     return NextResponse.json(

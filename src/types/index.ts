@@ -4,6 +4,7 @@ export interface User {
   name: string;
   picture: string | null;
   google_id: string | null;
+  facebook_id?: string | null;
   plan: string;
   created_at: string;
 }

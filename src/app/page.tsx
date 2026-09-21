@@ -33,7 +33,7 @@ export default async function LandingPage(props: PageProps) {
   const error = searchParams.error;
   const details = searchParams.details;
   const user = await getLoggedInUser();
-  const ctaLink = user ? "/dashboard" : "/api/auth/google";
+  const ctaLink = user ? "/dashboard" : "/api/auth/facebook/login";
   const ctaText = user ? "Acessar Painel" : "Criar Conta Grátis";
 
   return (
@@ -78,7 +78,7 @@ export default async function LandingPage(props: PageProps) {
               </Link>
             ) : (
               <Link 
-                href="/api/auth/google" 
+                href="/api/auth/facebook/login" 
                 className="px-4 py-2 rounded-xl text-xs font-bold text-slate-300 hover:text-white transition-colors"
               >
                 Entrar
@@ -106,9 +106,10 @@ export default async function LandingPage(props: PageProps) {
               <p className="text-red-300">
                 {error === 'callback_error' && 'Erro ao processar o retorno do Google. Verifique o cadastro ou tente novamente.'}
                 {error === 'oauth_failed' && 'O Google retornou um erro durante a autorização.'}
-                {error === 'server_configuration' && 'Erro de configuração do Google OAuth (chaves ausentes).'}
+                {error === 'facebook_error' && 'Não foi possível entrar com o Facebook. Tente novamente.'}
+                {error === 'server_configuration' && 'Erro de configuração do login (chaves ausentes no servidor).'}
                 {error === 'not_authenticated' && 'Sua sessão expirou. Conecte-se novamente para continuar.'}
-                {error !== 'callback_error' && error !== 'oauth_failed' && error !== 'server_configuration' && error !== 'not_authenticated' && `Erro: ${error}`}
+                {!['callback_error', 'oauth_failed', 'facebook_error', 'server_configuration', 'not_authenticated'].includes(error) && `Erro: ${error}`}
               </p>
               {details && (
                 <pre className="mt-2 p-2 rounded bg-black/50 border border-white/5 text-[10px] text-slate-400 overflow-x-auto whitespace-pre-wrap font-mono">
@@ -145,7 +146,8 @@ export default async function LandingPage(props: PageProps) {
             href={ctaLink} 
             className="w-full sm:w-auto px-8 py-4 rounded-2xl text-sm font-extrabold bg-gradient-to-r from-purple-600 via-pink-600 to-orange-500 hover:brightness-110 text-white shadow-[0_0_35px_rgba(139,92,246,0.4)] transition-all flex items-center justify-center gap-2 group"
           >
-            <span>{ctaText}</span>
+            {!user && <Facebook className="w-4 h-4" />}
+            <span>{user ? ctaText : "Entrar com Facebook"}</span>
             <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
           </Link>
           <a 
@@ -156,6 +158,14 @@ export default async function LandingPage(props: PageProps) {
             <span>Ver Como Funciona</span>
           </a>
         </div>
+        {!user && (
+          <p className="mt-4 text-xs text-slate-500">
+            Prefere outra forma?{" "}
+            <Link href="/api/auth/google" className="font-semibold text-slate-300 hover:text-white underline underline-offset-2">
+              Entrar com Google
+            </Link>
+          </p>
+        )}
 
         {/* Interactive Dashboard Mockup Preview */}
         <div className="mt-16 w-full max-w-5xl rounded-3xl border border-white/[0.12] bg-white/[0.02] p-2.5 shadow-[0_25px_80px_rgba(0,0,0,0.8)] backdrop-blur-md relative overflow-hidden group">
@@ -327,7 +337,7 @@ export default async function LandingPage(props: PageProps) {
             </div>
             <h3 className="text-lg font-extrabold text-white">Segurança & Isolamento</h3>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Cada usuário possui seu próprio ecossistema isolado de fontes, histórico de reels e tokens de autenticação criptografados via Google OAuth seguro.
+              Cada usuário possui seu próprio ecossistema isolado de fontes, histórico de reels e tokens de autenticação protegidos pelo login oficial do Facebook ou do Google.
             </p>
           </div>
         </div>

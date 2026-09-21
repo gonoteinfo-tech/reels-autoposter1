@@ -1,107 +1,130 @@
 import { NextResponse } from 'next/server';
-import axios from 'axios';
+import { cookies } from 'next/headers';
 import { setCachedPages } from '@/services/oauth-cache';
-import { getLoggedInUser } from '@/services/auth';
+import { getLoggedInUser, startUserSession } from '@/services/auth';
+import {
+  createUser,
+  ensureProIfListed,
+  getUserByEmail,
+  getUserByFacebookId,
+  getUserById,
+  updateUserFacebookId,
+} from '@/services/database';
+import {
+  FB_STATE_COOKIE,
+  exchangeCodeForLongLivedToken,
+  fetchFacebookPages,
+  fetchFacebookProfile,
+  isSecureRequest,
+  parseFacebookStateMode,
+  type FacebookProfile,
+} from '@/services/facebook-oauth';
+import type { User } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+/**
+ * Encontra a conta da pessoa pelo Facebook ID; senão, vincula a uma conta existente
+ * com o mesmo e-mail (ex.: quem já entrava com Google); senão, cria uma conta nova.
+ */
+function findOrCreateFacebookUser(profile: FacebookProfile): User {
+  const byFacebookId = getUserByFacebookId(profile.id);
+  if (byFacebookId) return byFacebookId;
+
+  if (profile.email) {
+    const byEmail = getUserByEmail(profile.email);
+    if (byEmail) {
+      if (!byEmail.facebook_id) updateUserFacebookId(byEmail.id, profile.id);
+      return getUserById(byEmail.id)!;
+    }
+  }
+
+  // Sem e-mail (a pessoa negou a permissão ou a conta não tem): e-mail interno único
+  return createUser({
+    email: profile.email || `facebook-${profile.id}@users.noreply.local`,
+    name: profile.name,
+    picture: profile.picture || null,
+    facebook_id: profile.id,
+  });
+}
+
+/**
+ * GET /api/auth/facebook/callback
+ * Retorno do Facebook para os dois fluxos:
+ * - login: cria/entra na conta, abre a sessão e leva para a escolha da página
+ * - connect: usuário já logado conectando a página
+ */
 export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const code = searchParams.get('code');
+  const state = searchParams.get('state');
+  const fbError = searchParams.get('error_message') || searchParams.get('error_description') || searchParams.get('error');
+
+  // Validar o "state" contra o cookie (uso único) — protege contra CSRF
+  const cookieStore = await cookies();
+  const expectedState = cookieStore.get(FB_STATE_COOKIE)?.value;
+  cookieStore.delete(FB_STATE_COOKIE);
+  const mode = state && expectedState && state === expectedState ? parseFacebookStateMode(state) : null;
+
+  const failTo = (target: 'login' | 'connect', message: string) =>
+    NextResponse.redirect(
+      new URL(
+        target === 'login'
+          ? `/?error=facebook_error&details=${encodeURIComponent(message)}`
+          : `/dashboard/settings?auth=error&message=${encodeURIComponent(message)}`,
+        request.url
+      )
+    );
+
+  if (!mode) {
+    console.error('❌ State OAuth do Facebook inválido ou ausente (possível CSRF ou link expirado)');
+    return failTo('login', 'Sessão de autorização expirada ou inválida. Tente entrar novamente.');
+  }
+
+  if (fbError || !code) {
+    console.error('❌ Erro no retorno do Facebook OAuth:', fbError);
+    return failTo(mode, fbError || 'Autorização cancelada ou código não fornecido');
+  }
+
   try {
-    // 0. Autenticar usuário
-    const user = await getLoggedInUser();
-    if (!user) {
-      console.error('❌ Callback do Facebook acionado sem usuário autenticado.');
-      return NextResponse.redirect(
-        new URL('/dashboard/settings?auth=error&message=Usuário não autenticado no sistema', request.url)
-      );
-    }
+    const userToken = await exchangeCodeForLongLivedToken(request, code);
+    const [profile, pages] = await Promise.all([
+      fetchFacebookProfile(userToken),
+      fetchFacebookPages(userToken),
+    ]);
 
-    const { searchParams } = new URL(request.url);
-    const code = searchParams.get('code');
-    const errorMsg = searchParams.get('error_message');
+    let user: User;
 
-    if (errorMsg || !code) {
-      console.error('❌ Erro no retorno do Facebook OAuth:', errorMsg);
-      return NextResponse.redirect(
-        new URL(`/dashboard/settings?auth=error&message=${encodeURIComponent(errorMsg || 'Código não fornecido')}`, request.url)
-      );
-    }
-
-    const appId = process.env.FACEBOOK_APP_ID;
-    const appSecret = process.env.FACEBOOK_APP_SECRET;
-
-    if (!appId || !appSecret) {
-      return NextResponse.redirect(
-        new URL('/dashboard/settings?auth=error&message=Credenciais do App Meta não configuradas', request.url)
-      );
-    }
-
-    // A URI de redirecionamento precisa corresponder exatamente à enviada na etapa 1
-    const host = request.headers.get('host') || new URL(request.url).host;
-    const referer = request.headers.get('referer');
-    let proto = request.headers.get('x-forwarded-proto') || 'http';
-    
-    if (referer && referer.startsWith('https://')) {
-      proto = 'https';
+    if (mode === 'login') {
+      user = findOrCreateFacebookUser(profile);
+      ensureProIfListed(user.email);
+      user = getUserById(user.id)!;
+      await startUserSession(user.id, isSecureRequest(request));
+      console.log(`🔑 Login com Facebook: ${user.name} (ID: ${user.id}, FB: ${profile.id})`);
     } else {
-      const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('192.168.') || host.startsWith('10.');
-      if (!isLocal) {
-        proto = 'https';
+      const loggedIn = await getLoggedInUser();
+      if (!loggedIn) {
+        return failTo('login', 'Sua sessão expirou. Entre novamente para conectar o Facebook.');
+      }
+      user = loggedIn;
+
+      // Vincula o Facebook à conta, para a pessoa poder entrar com ele depois —
+      // a menos que esse Facebook já pertença a outra conta
+      const owner = getUserByFacebookId(profile.id);
+      if (!user.facebook_id && !owner) {
+        updateUserFacebookId(user.id, profile.id);
       }
     }
-    
-    const redirectUri = `${proto}://${host}/api/auth/facebook/callback`;
 
-    // 1. Trocar código por Token de Acesso de Curta Duração
-    const tokenExchangeUrl = `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&client_secret=${appSecret}&code=${code}`;
+    // Páginas ficam em cache para a pessoa escolher nas configurações
+    setCachedPages(user.id, pages);
+    console.log(`🔑 OAuth do Facebook (${mode}) concluído para o Usuário ${user.id}. ${pages.length} páginas disponíveis.`);
 
-    const tokenRes = await axios.get(tokenExchangeUrl);
-    const shortLivedToken = tokenRes.data.access_token;
-
-    if (!shortLivedToken) {
-      throw new Error('Falha ao obter token de acesso de curta duração');
-    }
-
-    // 2. Estender para Token de Usuário de Longa Duração (60 dias)
-    const extendUrl = `https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
-    const extendRes = await axios.get(extendUrl);
-    const longLivedToken = extendRes.data.access_token;
-
-    if (!longLivedToken) {
-      throw new Error('Falha ao estender token de acesso de usuário');
-    }
-
-    // 3. Buscar Páginas do Usuário e Contas do Instagram vinculadas
-    const accountsUrl = `https://graph.facebook.com/v21.0/me/accounts?access_token=${longLivedToken}&fields=name,id,access_token,instagram_business_account{id,username,name}`;
-    const accountsRes = await axios.get(accountsUrl);
-    const pages = accountsRes.data.data || [];
-
-    // Formatar e armazenar no cache em memória
-    const formattedPages = pages.map((page: any) => ({
-      id: page.id,
-      name: page.name,
-      access_token: page.access_token,
-      instagram_business_account: page.instagram_business_account
-        ? {
-            id: page.instagram_business_account.id,
-            username: page.instagram_business_account.username,
-            name: page.instagram_business_account.name,
-          }
-        : undefined,
-    }));
-
-    // Cachear no serviço em memória, associado ao userId
-    setCachedPages(user.id, formattedPages);
-
-    console.log(`🔑 OAuth concluído para o Usuário ${user.id}. ${formattedPages.length} páginas cacheadas para configuração.`);
-
-    // Redireciona de volta para as configurações com flag de sucesso
     return NextResponse.redirect(new URL('/dashboard/settings?auth=success', request.url));
-  } catch (error: any) {
-    const msg = error.response?.data?.error?.message || error.message || 'Erro desconhecido';
-    console.error('❌ Erro no fluxo de Callback OAuth do Facebook:', msg);
-    return NextResponse.redirect(
-      new URL(`/dashboard/settings?auth=error&message=${encodeURIComponent(msg)}`, request.url)
-    );
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: { message?: string } } }; message?: string };
+    const msg = err.response?.data?.error?.message || err.message || 'Erro desconhecido';
+    console.error(`❌ Erro no callback do Facebook (${mode}):`, msg);
+    return failTo(mode, msg);
   }
 }
