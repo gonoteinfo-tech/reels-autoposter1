@@ -28,14 +28,14 @@ export async function publishVideoToPage(
 ): Promise<string> {
   console.log('📘 Publicando vídeo na página do Facebook...');
 
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-  const fbPageId = pageId || process.env.FACEBOOK_PAGE_ID;
+  const token = accessToken;
+  const fbPageId = pageId;
 
   if (!token) {
-    throw new Error('❌ Token do Facebook não fornecido e FACEBOOK_PAGE_ACCESS_TOKEN não configurado.');
+    throw new Error('❌ Nenhuma página do Facebook conectada (token ausente).');
   }
   if (!fbPageId) {
-    throw new Error('❌ ID da página Facebook não fornecido e FACEBOOK_PAGE_ID não configurado.');
+    throw new Error('❌ Nenhuma página do Facebook conectada (ID ausente).');
   }
 
   try {
@@ -80,14 +80,14 @@ export async function publishReelToPage(
 ): Promise<string> {
   console.log('📘 Publicando Reel na página do Facebook...');
 
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-  const fbPageId = pageId || process.env.FACEBOOK_PAGE_ID;
+  const token = accessToken;
+  const fbPageId = pageId;
 
   if (!token) {
-    throw new Error('❌ Token do Facebook não fornecido e FACEBOOK_PAGE_ACCESS_TOKEN não configurado.');
+    throw new Error('❌ Nenhuma página do Facebook conectada (token ausente).');
   }
   if (!fbPageId) {
-    throw new Error('❌ ID da página Facebook não fornecido e FACEBOOK_PAGE_ID não configurado.');
+    throw new Error('❌ Nenhuma página do Facebook conectada (ID ausente).');
   }
 
   try {
@@ -181,8 +181,8 @@ export async function verifyPageAccess(
 }> {
   console.log('📘 Verificando acesso à página do Facebook...');
 
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-  const fbPageId = pageId || process.env.FACEBOOK_PAGE_ID;
+  const token = accessToken;
+  const fbPageId = pageId;
 
   if (!token) {
     throw new Error('❌ Token do Facebook não fornecido.');
@@ -236,7 +236,7 @@ export async function getPostInsights(
   shares: number;
   comments: number;
 }> {
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  const token = accessToken;
 
   if (!token) {
     return { views: 0, likes: 0, shares: 0, comments: 0 };

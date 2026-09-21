@@ -8,6 +8,7 @@ import {
   getPublishedTotalCount,
 } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
+import { getPublishCredentials, hasPublishDestination } from '@/services/publish-credentials';
 import { publishReel as publishToInstagram } from '@/services/instagram-publisher';
 import { publishReelToPage as publishToFacebook } from '@/services/facebook-publisher';
 import { buildCaption } from '@/services/pipeline';
@@ -98,8 +99,15 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       );
     }
 
-    // Carregar configurações do usuário
+    // Carregar configurações e credenciais do usuário (só a página que ELE conectou)
     const settings = getAppSettings(user.id);
+    const credentials = getPublishCredentials(user.id, settings);
+    if (!hasPublishDestination(credentials)) {
+      return NextResponse.json(
+        { success: false, error: 'Nenhuma página do Facebook conectada. Conecte em Configurações → Facebook.' },
+        { status: 422 }
+      );
+    }
 
     // Atualizar estágio para "publishing"
     updateReelStage(reelId, 'publishing');
@@ -119,8 +127,8 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
         const { mediaId } = await publishToInstagram(
           reel.r2_url,
           finalCaption,
-          settings.facebook_page_access_token,
-          settings.instagram_business_account_id
+          credentials.pageToken,
+          credentials.igAccountId
         );
         result.igPostId = mediaId;
         updateData.ig_post_id = mediaId;
@@ -143,8 +151,8 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
         const fbPostId = await publishToFacebook(
           reel.r2_url,
           finalCaption,
-          settings.facebook_page_access_token,
-          settings.facebook_page_id
+          credentials.pageToken,
+          credentials.pageId
         );
         result.fbPostId = fbPostId;
         updateData.fb_post_id = fbPostId;

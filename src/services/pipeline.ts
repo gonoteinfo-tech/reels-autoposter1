@@ -26,6 +26,7 @@ import { uploadVideo, generateR2Key } from './storage';
 import { publishReel as publishToInstagram } from './instagram-publisher';
 import { publishReelToPage } from './facebook-publisher';
 import { rewriteCaption, ensureMinimumHashtags } from './ai-caption';
+import { getPublishCredentials, hasPublishDestination } from './publish-credentials';
 
 /** Após este tempo (min) sem resultado, uma coleta pendente da Bright Data é descartada e disparada de novo */
 const BRIGHTDATA_PENDING_MAX_MINUTES = 30;
@@ -339,15 +340,23 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
 
       const caption = buildCaption(reel!.caption, reel!.hashtags, settings.custom_caption_template);
       const publishMessages: string[] = [];
+      // Somente a página que o dono do reel conectou (o .env vale só para o administrador)
+      const credentials = getPublishCredentials(reel!.user_id, settings);
+
+      if (!credentials.pageToken) {
+        throw new Error('Nenhuma página do Facebook conectada. Conecte em Configurações → Facebook.');
+      }
 
       // Publicar no Instagram (usando credenciais do usuário)
-      if (settings.instagram_enabled) {
+      if (settings.instagram_enabled && !credentials.igAccountId) {
+        publishMessages.push('IG: a página conectada não tem conta do Instagram Business vinculada');
+      } else if (settings.instagram_enabled) {
         try {
           const { mediaId } = await publishToInstagram(
             reel!.r2_url!,
             caption,
-            settings.facebook_page_access_token,
-            settings.instagram_business_account_id
+            credentials.pageToken,
+            credentials.igAccountId
           );
           updateReel(reelId, { ig_post_id: mediaId });
           publishMessages.push(`IG: ${mediaId}`);
@@ -359,13 +368,15 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       }
 
       // Publicar no Facebook (usando credenciais do usuário)
-      if (settings.facebook_enabled) {
+      if (settings.facebook_enabled && !credentials.pageId) {
+        publishMessages.push('FB: nenhuma página do Facebook conectada');
+      } else if (settings.facebook_enabled) {
         try {
           const fbPostId = await publishReelToPage(
             reel!.r2_url!,
             caption,
-            settings.facebook_page_access_token,
-            settings.facebook_page_id
+            credentials.pageToken,
+            credentials.pageId
           );
           updateReel(reelId, { fb_post_id: fbPostId });
           publishMessages.push(`FB: ${fbPostId}`);
@@ -386,7 +397,11 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
         removeLocalVideoFiles(reelUpdated);
         return `Publicação concluída: ${publishMessages.join(' | ')}`;
       } else {
-        throw new Error(`Nenhuma plataforma publicou com sucesso: ${publishMessages.join(' | ')}`);
+        throw new Error(
+          publishMessages.length > 0
+            ? `Nenhuma plataforma publicou com sucesso: ${publishMessages.join(' | ')}`
+            : 'Nenhuma plataforma publicou: Instagram e Facebook estão desativados nas Configurações.'
+        );
       }
     });
 
@@ -410,6 +425,13 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
   const settings = getAppSettings(user.id);
   const maxReels = settings.max_reels_per_run;
   const discoveryLimit = settings.discovery_limit;
+
+  // Sem página conectada não há onde publicar: nem descobre (gastaria crédito da Bright Data)
+  // nem processa. Comum em contas novas que ainda não escolheram a página.
+  if (!hasPublishDestination(getPublishCredentials(user.id, settings))) {
+    console.log(`⏭️ [Usuário #${user.id}] Nenhuma página do Facebook conectada — pulando o usuário até ele conectar nas Configurações.`);
+    return;
+  }
 
   // Fase 1: Descobrir novos reels
   console.log(`\n📥 [Usuário #${user.id}] ── Fase de Descoberta ──`);
@@ -451,7 +473,7 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
               || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, user.id) : null);
             if (existing) continue;
 
-            createReel({
+            const created = createReel({
               source_id: source.id,
               source_username: source.username,
               instagram_url: reelUrl,
@@ -464,6 +486,7 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
               // URL direta do vídeo: o download não precisa de cookies
               direct_video_url: scrapedReel.videoUrl,
             });
+            if (!created) continue; // já existia (ex.: varredura manual simultânea)
 
             newCount++;
             totalDiscovered++;
@@ -529,14 +552,15 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
           // Extrair ID do vídeo
           const videoId = extractVideoId(url, platform);
 
-          // Criar registro no banco
-          createReel({
+          // Criar registro no banco (null = já existia com outro formato de URL)
+          const created = createReel({
             source_id: source.id,
             source_username: source.username,
             instagram_url: url,
             instagram_id: videoId || undefined,
             user_id: user.id
           });
+          if (!created) continue;
 
           newCount++;
           totalDiscovered++;
