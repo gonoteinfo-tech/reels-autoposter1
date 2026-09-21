@@ -27,6 +27,7 @@ import { publishReel as publishToInstagram } from './instagram-publisher';
 import { publishReelToPage } from './facebook-publisher';
 import { rewriteCaption, ensureMinimumHashtags } from './ai-caption';
 import { getPublishCredentials, hasPublishDestination } from './publish-credentials';
+import { getUserLogoPath } from './logo-storage';
 
 /** Após este tempo (min) sem resultado, uma coleta pendente da Bright Data é descartada e disparada de novo */
 const BRIGHTDATA_PENDING_MAX_MINUTES = 30;
@@ -247,13 +248,10 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       const outputFilename = `processed_${reelId}_${Date.now()}.mp4`;
       const outputPath = path.join(PROCESSED_DIR, outputFilename);
 
-      // Caminhos do logo: específico do usuário ou admin fallback
-      const userLogoPath = path.join(process.cwd(), 'public', 'logos', `logo_${reel!.user_id}.png`);
-      const adminLogoPath = path.join(process.cwd(), 'public', 'logos', 'logo.png');
-      const activeLogoPath = fs.existsSync(userLogoPath) ? userLogoPath : adminLogoPath;
+      // Marca d'água do dono do reel (null = conta sem logo: publica sem marca d'água)
+      const activeLogoPath = getUserLogoPath(reel!.user_id);
 
-      // Verificar se o logo ativo existe
-      if (fs.existsSync(activeLogoPath)) {
+      if (activeLogoPath) {
         await addLogoToVideo(
           reel!.local_path!,
           activeLogoPath,
@@ -262,7 +260,7 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
           settings.logo_scale
         );
       } else {
-        console.log('🎬 Logo não encontrada, copiando vídeo sem processamento');
+        console.log(`🎬 Usuário #${reel!.user_id} sem marca d'água — vídeo segue sem logo`);
         fs.copyFileSync(reel!.local_path!, outputPath);
       }
 

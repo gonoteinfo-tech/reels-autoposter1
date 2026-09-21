@@ -122,22 +122,13 @@ export default function SettingsClient({ user }: { user: User }) {
       window.history.replaceState({}, document.title, "/dashboard/settings");
     }
 
-    // Check if user-specific logo exists, fallback to default logo
-    const userLogoUrl = `/logos/logo_${user.id}.png`;
-    fetch(userLogoUrl, { method: "HEAD" })
+    // Marca d'água atual da conta (a mesma que vai nos vídeos); 404 = sem marca d'água
+    fetch("/api/logo", { method: "HEAD", cache: "no-store" })
       .then((res) => {
-        if (res.ok) {
-          setLogoPreview(userLogoUrl);
-        } else {
-          fetch("/logos/logo.png", { method: "HEAD" })
-            .then((r) => {
-              if (r.ok) setLogoPreview("/logos/logo.png");
-            })
-            .catch(() => {});
-        }
+        if (res.ok) setLogoPreview(`/api/logo?t=${Date.now()}`);
       })
       .catch(() => {});
-  }, [fetchSettings, fetchPages, user.id]);
+  }, [fetchSettings, fetchPages]);
 
   const handleSave = async (customSettings?: AppSettings) => {
     setSaving(true);
@@ -228,12 +219,31 @@ export default function SettingsClient({ user }: { user: User }) {
       });
       const data = await res.json();
       if (data.success) {
-        setLogoPreview(data.data.path + "?t=" + Date.now());
+        setLogoPreview(data.data.path);
+      } else {
+        setError(data.error || "Erro ao enviar imagem da logo");
       }
     } catch {
       setError("Erro ao enviar imagem da logo");
     } finally {
       setUploadingLogo(false);
+      // Permite escolher o mesmo arquivo de novo
+      e.target.value = "";
+    }
+  };
+
+  const handleLogoRemove = async () => {
+    if (!confirm("Remover a marca d'água? Os próximos vídeos serão publicados sem logo.")) return;
+    try {
+      const res = await fetch("/api/logo", { method: "DELETE" });
+      const data = await res.json();
+      if (data.success) {
+        setLogoPreview(null);
+      } else {
+        setError(data.error || "Erro ao remover a marca d'água");
+      }
+    } catch {
+      setError("Erro ao remover a marca d'água");
     }
   };
 
@@ -381,25 +391,38 @@ export default function SettingsClient({ user }: { user: User }) {
                       )}
                     </div>
                     <div>
-                      <p className="text-xs font-bold text-white">Arquivo da Marca (PNG)</p>
-                      <p className="text-[11px] text-slate-400">Recomendado formato PNG transparente</p>
+                      <p className="text-xs font-bold text-white">Arquivo da Marca</p>
+                      <p className="text-[11px] text-slate-400">
+                        {logoPreview ? "PNG transparente fica melhor" : "Sem marca d'água: os vídeos saem sem logo"}
+                      </p>
                     </div>
                   </div>
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/png,image/webp"
+                    accept="image/png,image/jpeg,image/webp"
                     className="hidden"
                     onChange={handleLogoUpload}
                   />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploadingLogo}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    {uploadingLogo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                    <span>{logoPreview ? "Trocar Imagem" : "Enviar PNG"}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {logoPreview && (
+                      <button
+                        onClick={handleLogoRemove}
+                        disabled={uploadingLogo}
+                        className="btn btn-secondary btn-sm"
+                      >
+                        <span>Remover</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingLogo}
+                      className="btn btn-secondary btn-sm"
+                    >
+                      {uploadingLogo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                      <span>{logoPreview ? "Trocar Imagem" : "Enviar Logo"}</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Interactive Position Buttons */}

@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { getLoggedInUser } from '@/services/auth';
+import { saveUserLogo } from '@/services/logo-storage';
 import type { ApiResponse } from '@/types';
 
 /** Tipos MIME permitidos para o logo */
@@ -64,25 +63,14 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       );
     }
 
-    // Criar diretório de logos se não existir
-    const logosDir = path.join(process.cwd(), 'public', 'logos');
-    if (!fs.existsSync(logosDir)) {
-      fs.mkdirSync(logosDir, { recursive: true });
-      console.log('📁 Diretório public/logos/ criado');
-    }
-
-    // Converter o File para Buffer e salvar com o ID do usuário
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const filename = `logo_${user.id}.png`;
-    const logoPath = path.join(logosDir, filename);
-
-    fs.writeFileSync(logoPath, buffer);
-    console.log(`🎨 Logo salvo para o Usuário ${user.id} em: ${logoPath} (${(file.size / 1024).toFixed(1)}KB)`);
+    // Salva em data/logos (fora do Git e de public/), convertendo para PNG se preciso
+    const buffer = Buffer.from(await file.arrayBuffer());
+    await saveUserLogo(user.id, buffer);
+    console.log(`🎨 Logo salva para o Usuário ${user.id} (${(file.size / 1024).toFixed(1)}KB)`);
 
     return NextResponse.json({
       success: true,
-      data: { path: `/logos/${filename}` },
+      data: { path: `/api/logo?t=${Date.now()}` },
     });
   } catch (error) {
     console.error('❌ Erro ao fazer upload do logo:', error);
