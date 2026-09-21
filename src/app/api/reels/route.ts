@@ -5,6 +5,7 @@ import {
   createSource,
   createReel,
   getReelByUrl,
+  getReelByInstagramId,
   getDb,
   getReelById,
   deleteReel,
@@ -128,8 +129,19 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       );
     }
 
+    // Links do Instagram costumam vir com parâmetros de rastreamento (?igsh=...) — remover
+    let cleanUrl = url.trim();
+    if (isInstagram) {
+      try {
+        const parsed = new URL(cleanUrl);
+        cleanUrl = `${parsed.origin}${parsed.pathname}`.replace(/\/?$/, '/');
+      } catch {
+        // mantém a URL original
+      }
+    }
+
     // Verificar se o reel já existe para este usuário
-    const existingReel = getReelByUrl(url, user.id);
+    const existingReel = getReelByUrl(cleanUrl, user.id);
     if (existingReel) {
       return NextResponse.json(
         { success: false, error: 'Este vídeo já foi adicionado anteriormente' },
@@ -142,7 +154,15 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
     else if (isYouTube) platform = 'youtube';
     else if (isFacebook) platform = 'facebook';
 
-    const videoId = extractVideoId(url, platform);
+    const videoId = extractVideoId(cleanUrl, platform);
+
+    // O mesmo vídeo pode já estar na lista com outro formato de link (ex.: descoberto numa fonte)
+    if (videoId && getReelByInstagramId(videoId, user.id)) {
+      return NextResponse.json(
+        { success: false, error: 'Este vídeo já está na sua lista' },
+        { status: 409 }
+      );
+    }
 
     // Extrair username da URL ou usar "manual"
     let sourceUsername = 'manual';
@@ -167,12 +187,19 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
     const reel = createReel({
       source_id: sourceId,
       source_username: sourceUsername,
-      instagram_url: url.trim(),
+      instagram_url: cleanUrl,
       instagram_id: videoId || undefined,
       caption: caption || '',
       original_caption: caption || '',
       user_id: user.id,
     });
+
+    if (!reel) {
+      return NextResponse.json(
+        { success: false, error: 'Este vídeo já está na sua lista' },
+        { status: 409 }
+      );
+    }
 
     return NextResponse.json(
       { success: true, data: { reel } },

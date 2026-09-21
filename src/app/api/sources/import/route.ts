@@ -10,6 +10,7 @@ import {
   getLastPublishedAt,
 } from '@/services/database';
 import { getLoggedInUser } from '@/services/auth';
+import { getPublishCredentials, hasPublishDestination } from '@/services/publish-credentials';
 import { discoverReels, extractVideoId } from '@/services/instagram-downloader';
 import { processReel } from '@/services/pipeline';
 import { isBrightDataConfigured, discoverReelsBrightData } from '@/services/brightdata-discoverer';
@@ -64,6 +65,14 @@ export async function POST(request: Request) {
     const settings = getAppSettings(user.id);
     const discoveryLimit = settings.discovery_limit;
 
+    // Sem página conectada não há onde publicar — não gastar crédito de varredura
+    if (!hasPublishDestination(getPublishCredentials(user.id, settings))) {
+      return NextResponse.json(
+        { success: false, error: 'Conecte sua página do Facebook em Configurações antes de varrer as fontes.' },
+        { status: 422 }
+      );
+    }
+
     console.log(`📥 [Importar Manual] Varrendo @${source.username} para Usuário #${user.id} (puxar até: ${discoveryLimit})...`);
 
     const platform = (source as any).platform || 'instagram';
@@ -94,6 +103,7 @@ export async function POST(request: Request) {
           direct_video_url: scrapedReel.videoUrl, // Salvar URL direta para evitar downloads bloqueados na VPS
         });
 
+        if (!newReel) continue; // já existia (ex.: varredura simultânea)
         newReelIds.push(newReel.id);
         newCount++;
       }
@@ -125,6 +135,7 @@ export async function POST(request: Request) {
           user_id: user.id,
         });
 
+        if (!newReel) continue; // já existia (ex.: varredura simultânea)
         newReelIds.push(newReel.id);
         newCount++;
       }

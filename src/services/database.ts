@@ -811,10 +811,12 @@ export function createReel(data: {
   user_id: number;
   /** URL direta do vídeo fornecida pela Bright Data (evita cookies/scraping no download) */
   direct_video_url?: string;
-}): Reel {
+}): Reel | null {
   const database = getDb();
+  // OR IGNORE: se o vídeo já existe para o usuário (mesma URL ou mesmo ID), não cria de novo.
+  // Evita erro de UNIQUE quando duas varreduras rodam ao mesmo tempo ou o link muda de formato.
   const result = database.prepare(`
-    INSERT INTO reels (source_id, source_username, instagram_url, instagram_id, caption, original_caption, hashtags, user_id, direct_video_url)
+    INSERT OR IGNORE INTO reels (source_id, source_username, instagram_url, instagram_id, caption, original_caption, hashtags, user_id, direct_video_url)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.source_id,
@@ -827,6 +829,11 @@ export function createReel(data: {
     data.user_id,
     data.direct_video_url || null
   );
+
+  if (result.changes === 0) {
+    console.log(`💾 Reel já existia, ignorado: ${data.instagram_url} (Usuário ${data.user_id})`);
+    return null;
+  }
 
   console.log(`💾 Reel criado: ${data.instagram_url} para Usuário ${data.user_id} (ID: ${result.lastInsertRowid})`);
   return getReelById(Number(result.lastInsertRowid))!;

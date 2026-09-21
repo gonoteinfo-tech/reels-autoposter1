@@ -32,14 +32,14 @@ export async function createReelContainer(
 ): Promise<string> {
   console.log('📱 Criando container de Reel no Instagram...');
 
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-  const igAccountId = accountId || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+  const token = accessToken;
+  const igAccountId = accountId;
 
   if (!token) {
-    throw new Error('❌ Token do Facebook não fornecido e FACEBOOK_PAGE_ACCESS_TOKEN não configurado.');
+    throw new Error('❌ Nenhuma página do Facebook conectada (token ausente).');
   }
   if (!igAccountId) {
-    throw new Error('❌ ID da conta Instagram não fornecido e INSTAGRAM_BUSINESS_ACCOUNT_ID não configurado.');
+    throw new Error('❌ A página conectada não tem conta do Instagram Business vinculada.');
   }
 
   try {
@@ -78,7 +78,7 @@ export async function checkContainerStatus(
   containerId: string,
   accessToken?: string
 ): Promise<{ status: string; error?: string }> {
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  const token = accessToken;
 
   if (!token) {
     throw new Error('❌ Token do Facebook não fornecido.');
@@ -123,8 +123,8 @@ export async function publishContainer(
 ): Promise<string> {
   console.log(`📱 Publicando container ${containerId}...`);
 
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-  const igAccountId = accountId || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+  const token = accessToken;
+  const igAccountId = accountId;
 
   if (!token) {
     throw new Error('❌ Token do Facebook não fornecido.');
@@ -181,8 +181,8 @@ export async function publishReel(
   console.log('📱 Iniciando fluxo completo de publicação no Instagram...');
   const startTime = Date.now();
 
-  const token = accessToken || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
-  const igAccountId = accountId || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
+  const token = accessToken;
+  const igAccountId = accountId;
 
   // Passo 1: Criar container
   const containerId = await createReelContainer(videoUrl, caption, token, igAccountId);
