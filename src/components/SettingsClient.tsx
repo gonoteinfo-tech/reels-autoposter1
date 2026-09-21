@@ -511,6 +511,59 @@ export default function SettingsClient({ user }: { user: User }) {
                 </button>
               </div>
             )}
+
+            {/* Onde publicar: estes interruptores sumiram na reformulação visual, mas o
+                pipeline continua obedecendo a eles — sem eles, quem desligou não conseguia religar */}
+            <div className="space-y-2">
+              {([
+                {
+                  key: "instagram_enabled" as const,
+                  label: "Publicar no Instagram",
+                  hint: settings.facebook_page_id && !settings.instagram_business_account_id
+                    ? "A página conectada não tem conta do Instagram Business vinculada"
+                    : "Publica os Reels no Instagram Business vinculado à página",
+                  warn: !!settings.facebook_page_id && !settings.instagram_business_account_id,
+                  Icon: Instagram,
+                  on: "bg-pink-600 shadow-[0_0_12px_rgba(219,39,119,0.5)]",
+                },
+                {
+                  key: "facebook_enabled" as const,
+                  label: "Publicar no Facebook",
+                  hint: "Publica os Reels na página do Facebook conectada",
+                  warn: false,
+                  Icon: Facebook,
+                  on: "bg-blue-600 shadow-[0_0_12px_rgba(37,99,235,0.5)]",
+                },
+              ]).map(({ key, label, hint, warn, Icon, on }) => (
+                <div key={key} className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                  <div className="flex items-center gap-3">
+                    <Icon className={`w-4 h-4 ${settings[key] ? "text-white" : "text-slate-500"}`} />
+                    <div>
+                      <p className={`text-xs font-bold ${settings[key] ? "text-white" : "text-slate-500"}`}>{label}</p>
+                      <p className={`text-[11px] ${warn && settings[key] ? "text-amber-400" : "text-slate-400"}`}>{hint}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={label}
+                    aria-pressed={settings[key]}
+                    onClick={() => updateSetting(key, !settings[key])}
+                    className={`relative w-12 h-6 rounded-full transition-colors ${settings[key] ? on : "bg-zinc-800"}`}
+                  >
+                    <span
+                      className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                        settings[key] ? "left-7" : "left-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+              ))}
+              {!settings.instagram_enabled && !settings.facebook_enabled && (
+                <p className="text-[11px] text-amber-400">
+                  Com as duas opções desligadas, nenhum vídeo será publicado.
+                </p>
+              )}
+            </div>
           </div>
 
           {/* ── Section 3: Agendamento & Frequência ─────────────────────── */}
