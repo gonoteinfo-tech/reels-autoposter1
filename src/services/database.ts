@@ -75,6 +75,13 @@ export function initDatabase(): void {
     console.log('💾 Campo "plan" adicionado à tabela "users"');
   }
 
+  // Login com Facebook: ID do usuário no Facebook (único por conta)
+  if (!usersColumns.some(c => c.name === 'facebook_id')) {
+    database.exec("ALTER TABLE users ADD COLUMN facebook_id TEXT");
+    console.log('💾 Campo "facebook_id" adicionado à tabela "users"');
+  }
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_facebook_id ON users(facebook_id) WHERE facebook_id IS NOT NULL");
+
   // 2. Criar tabela de sessões
   database.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -385,17 +392,23 @@ export function getUserByGoogleId(googleId: string): User | null {
   return (database.prepare('SELECT * FROM users WHERE google_id = ?').get(googleId) as User) || null;
 }
 
+export function getUserByFacebookId(facebookId: string): User | null {
+  const database = getDb();
+  return (database.prepare('SELECT * FROM users WHERE facebook_id = ?').get(facebookId) as User) || null;
+}
+
 export function createUser(data: {
   email: string;
   name: string;
   picture?: string | null;
   google_id?: string | null;
+  facebook_id?: string | null;
 }): User {
   const database = getDb();
   const result = database.prepare(`
-    INSERT INTO users (email, name, picture, google_id, plan)
-    VALUES (?, ?, ?, ?, 'pro')
-  `).run(data.email, data.name, data.picture || null, data.google_id || null);
+    INSERT INTO users (email, name, picture, google_id, facebook_id, plan)
+    VALUES (?, ?, ?, ?, ?, 'pro')
+  `).run(data.email, data.name, data.picture || null, data.google_id || null, data.facebook_id || null);
 
   console.log(`💾 Usuário criado: ${data.email} (ID: ${result.lastInsertRowid}) com plano PRO`);
   return getUserById(Number(result.lastInsertRowid))!;
@@ -405,6 +418,12 @@ export function updateUserGoogleId(id: number, googleId: string): void {
   const database = getDb();
   database.prepare('UPDATE users SET google_id = ? WHERE id = ?').run(googleId, id);
   console.log(`💾 Google ID vinculado ao usuário ID: ${id}`);
+}
+
+export function updateUserFacebookId(id: number, facebookId: string): void {
+  const database = getDb();
+  database.prepare('UPDATE users SET facebook_id = ? WHERE id = ?').run(facebookId, id);
+  console.log(`💾 Facebook ID vinculado ao usuário ID: ${id}`);
 }
 
 export function getAllUsers(): User[] {
