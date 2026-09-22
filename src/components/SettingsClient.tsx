@@ -1,45 +1,36 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  Settings,
-  Save,
-  Upload,
-  Clock,
-  Image as ImageIcon,
-  Loader2,
-  CheckCircle2,
-  AlertCircle,
-  Zap,
-  Monitor,
-  Link2,
-  Unlink,
-  Menu,
-  Sparkles,
-  Smartphone,
-  Tag,
-} from "lucide-react";
+import { Check, Upload, Loader2, AlertCircle, Link2, X, Sparkles, Play } from "lucide-react";
 import { Instagram, Facebook } from "@/components/icons";
 
-import Sidebar from "@/components/Sidebar";
+import AppShell, { PageHeader, Switch } from "@/components/AppShell";
 import type { AppSettings, User } from "@/types";
 
-const POSITIONS = [
-  { value: "top-left", label: "Superior Esquerdo" },
-  { value: "top-right", label: "Superior Direito" },
-  { value: "center", label: "Centro" },
-  { value: "bottom-left", label: "Inferior Esquerdo" },
-  { value: "bottom-right", label: "Inferior Direito" },
+type LogoPosition = AppSettings["logo_position"];
+
+const POSITION_LABELS: Record<LogoPosition, string> = {
+  "top-left": "Superior esquerdo",
+  "top-right": "Superior direito",
+  center: "Centro",
+  "bottom-left": "Inferior esquerdo",
+  "bottom-right": "Inferior direito",
+};
+
+/** Grade 3x3 do seletor de posição (null = célula vazia) */
+const POSITION_GRID: (LogoPosition | null)[] = [
+  "top-left", null, "top-right",
+  null, "center", null,
+  "bottom-left", null, "bottom-right",
 ];
 
 const CRON_PRESETS = [
   { value: "*/15 * * * *", label: "A cada 15 minutos" },
-  { value: "*/30 * * * *", label: "A cada 30 minutos (Recomendado)" },
-  { value: "0 * * * *", label: "A cada 1 hora" },
+  { value: "*/30 * * * *", label: "A cada 30 minutos (recomendado)" },
+  { value: "0 * * * *", label: "A cada hora" },
   { value: "0 */3 * * *", label: "A cada 3 horas" },
   { value: "0 */6 * * *", label: "A cada 6 horas" },
-  { value: "0 0 * * *", label: "Uma vez ao dia (00:00)" },
+  { value: "0 0 * * *", label: "Uma vez por dia (00:00)" },
 ];
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -61,9 +52,24 @@ const DEFAULT_SETTINGS: AppSettings = {
   instagram_username: "",
 };
 
+/** Largura da prévia 9:16 em px — a logo é escalada na mesma proporção do vídeo de 1080 px */
+const PREVIEW_WIDTH = 234;
+
+interface FbPage {
+  id: string;
+  name: string;
+  access_token: string;
+  instagram_business_account?: { id: string; username: string };
+}
+
+const SECTIONS = [
+  { id: "meta", label: "Conta Meta" },
+  { id: "marca", label: "Marca d'água" },
+  { id: "automacao", label: "Automação" },
+  { id: "legendas", label: "Legendas" },
+];
+
 export default function SettingsClient({ user }: { user: User }) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -72,8 +78,7 @@ export default function SettingsClient({ user }: { user: User }) {
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Estados para OAuth e Seleção de Páginas
-  const [availablePages, setAvailablePages] = useState<any[]>([]);
+  const [availablePages, setAvailablePages] = useState<FbPage[]>([]);
   const [showPageSelector, setShowPageSelector] = useState(false);
   const [loadingPages, setLoadingPages] = useState(false);
 
@@ -81,11 +86,9 @@ export default function SettingsClient({ user }: { user: User }) {
     try {
       const res = await fetch("/api/settings");
       const data = await res.json();
-      if (data.success && data.data) {
-        setSettings({ ...DEFAULT_SETTINGS, ...data.data });
-      }
+      if (data.success && data.data) setSettings({ ...DEFAULT_SETTINGS, ...data.data });
     } catch {
-      // use defaults
+      // usa os padrões
     }
   }, []);
 
@@ -98,10 +101,10 @@ export default function SettingsClient({ user }: { user: User }) {
         setAvailablePages(data.data.pages);
         setShowPageSelector(true);
       } else {
-        setError("Nenhuma página detectada. Certifique-se de que autorizou as permissões do Facebook.");
+        setError("Nenhuma página encontrada. Confira se você autorizou o acesso às páginas no Facebook.");
       }
     } catch {
-      setError("Erro ao carregar lista de páginas do Facebook.");
+      setError("Erro ao carregar a lista de páginas do Facebook.");
     } finally {
       setLoadingPages(false);
     }
@@ -109,16 +112,15 @@ export default function SettingsClient({ user }: { user: User }) {
 
   useEffect(() => {
     fetchSettings();
-    
-    // Check if redirect returned from OAuth login
+
+    // Retorno do login/conexão com o Facebook
     const urlParams = new URLSearchParams(window.location.search);
     const authStatus = urlParams.get("auth");
     if (authStatus === "success") {
       fetchPages();
       window.history.replaceState({}, document.title, "/dashboard/settings");
     } else if (authStatus === "error") {
-      const msg = urlParams.get("message") || "Erro na autenticação";
-      setError(`Falha ao conectar com o Facebook: ${msg}`);
+      setError(`Falha ao conectar com o Facebook: ${urlParams.get("message") || "erro na autenticação"}`);
       window.history.replaceState({}, document.title, "/dashboard/settings");
     }
 
@@ -130,11 +132,20 @@ export default function SettingsClient({ user }: { user: User }) {
       .catch(() => {});
   }, [fetchSettings, fetchPages]);
 
+  // Fechar o seletor de página com Esc
+  useEffect(() => {
+    if (!showPageSelector) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowPageSelector(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showPageSelector]);
+
   const handleSave = async (customSettings?: AppSettings) => {
     setSaving(true);
     setError("");
     setSaved(false);
-
     try {
       const res = await fetch("/api/settings", {
         method: "PUT",
@@ -145,11 +156,9 @@ export default function SettingsClient({ user }: { user: User }) {
       if (data.success) {
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
-        if (data.data) {
-          setSettings({ ...DEFAULT_SETTINGS, ...data.data });
-        }
+        if (data.data) setSettings({ ...DEFAULT_SETTINGS, ...data.data });
       } else {
-        setError(data.error || "Erro ao salvar configurações");
+        setError(data.error || "Erro ao salvar as configurações");
       }
     } catch (err) {
       setError(`Erro de conexão: ${err instanceof Error ? err.message : String(err)}`);
@@ -160,13 +169,12 @@ export default function SettingsClient({ user }: { user: User }) {
 
   const handleConnectFacebook = async () => {
     try {
-      const origin = window.location.origin;
-      const res = await fetch(`/api/auth/facebook?origin=${encodeURIComponent(origin)}`);
+      const res = await fetch(`/api/auth/facebook?origin=${encodeURIComponent(window.location.origin)}`);
       const data = await res.json();
       if (data.success && data.data?.authUrl) {
         window.location.href = data.data.authUrl;
       } else {
-        setError(data.error || "Falha ao iniciar autenticação com o Facebook");
+        setError(data.error || "Falha ao iniciar a conexão com o Facebook");
       }
     } catch {
       setError("Erro de rede ao conectar com o Facebook");
@@ -174,6 +182,7 @@ export default function SettingsClient({ user }: { user: User }) {
   };
 
   const handleDisconnectFacebook = () => {
+    if (!confirm("Desconectar a página? Os reels deixam de ser publicados até você conectar de novo.")) return;
     const updated = {
       ...settings,
       facebook_page_id: "",
@@ -189,7 +198,6 @@ export default function SettingsClient({ user }: { user: User }) {
   const handleSelectPage = (pageId: string) => {
     const page = availablePages.find((p) => p.id === pageId);
     if (!page) return;
-
     const updated = {
       ...settings,
       facebook_page_id: page.id,
@@ -198,7 +206,6 @@ export default function SettingsClient({ user }: { user: User }) {
       instagram_business_account_id: page.instagram_business_account?.id || "",
       instagram_username: page.instagram_business_account?.username || "",
     };
-
     setSettings(updated);
     setShowPageSelector(false);
     handleSave(updated);
@@ -207,28 +214,22 @@ export default function SettingsClient({ user }: { user: User }) {
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setUploadingLogo(true);
     const formData = new FormData();
     formData.append("logo", file);
-
     try {
-      const res = await fetch("/api/upload-logo", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch("/api/upload-logo", { method: "POST", body: formData });
       const data = await res.json();
       if (data.success) {
         setLogoPreview(data.data.path);
       } else {
-        setError(data.error || "Erro ao enviar imagem da logo");
+        setError(data.error || "Erro ao enviar a imagem da logo");
       }
     } catch {
-      setError("Erro ao enviar imagem da logo");
+      setError("Erro ao enviar a imagem da logo");
     } finally {
       setUploadingLogo(false);
-      // Permite escolher o mesmo arquivo de novo
-      e.target.value = "";
+      e.target.value = ""; // permite escolher o mesmo arquivo de novo
     }
   };
 
@@ -237,20 +238,14 @@ export default function SettingsClient({ user }: { user: User }) {
     try {
       const res = await fetch("/api/logo", { method: "DELETE" });
       const data = await res.json();
-      if (data.success) {
-        setLogoPreview(null);
-      } else {
-        setError(data.error || "Erro ao remover a marca d'água");
-      }
+      if (data.success) setLogoPreview(null);
+      else setError(data.error || "Erro ao remover a marca d'água");
     } catch {
       setError("Erro ao remover a marca d'água");
     }
   };
 
-  const updateSetting = <K extends keyof AppSettings>(
-    key: K,
-    value: AppSettings[K]
-  ) => {
+  const updateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -259,517 +254,362 @@ export default function SettingsClient({ user }: { user: User }) {
     updateSetting("custom_caption_template", current ? `${current} ${tag}` : tag);
   };
 
-  // Helper for watermark preview positioning style
-  const getWatermarkPositionClasses = () => {
-    switch (settings.logo_position) {
-      case "top-left": return "top-4 left-4";
-      case "top-right": return "top-4 right-4";
-      case "bottom-left": return "bottom-4 left-4";
-      case "center": return "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2";
-      case "bottom-right":
-      default: return "bottom-4 right-4";
-    }
+  const connected = !!settings.facebook_page_id;
+  const pageWithoutInstagram = connected && !settings.instagram_business_account_id;
+  const logoWidth = Math.max(12, Math.round((settings.logo_scale * PREVIEW_WIDTH) / 1080));
+  const logoPlacement: Record<LogoPosition, string> = {
+    "top-left": "top-3 left-3",
+    "top-right": "top-3 right-3",
+    center: "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2",
+    "bottom-left": "bottom-3 left-3",
+    "bottom-right": "bottom-3 right-3",
   };
 
   return (
-    <div className="app-layout">
-      <div className="ambient-bg" />
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((v) => !v)}
-        user={user}
-        mobileOpen={mobileOpen}
-        onMobileClose={() => setMobileOpen(false)}
+    <AppShell user={user}>
+      <PageHeader
+        title="Configurações"
+        subtitle="Onde publicar, marca d'água, ritmo da automação e legendas"
+        actions={
+          <button type="button" onClick={() => handleSave()} disabled={saving} className="btn btn-primary">
+            {saving ? <Loader2 className="animate-spin" /> : <Check />}
+            {saved ? "Alterações salvas" : "Salvar alterações"}
+          </button>
+        }
       />
 
-      <main className={`main-area relative z-10 ${sidebarCollapsed ? "collapsed" : ""}`}>
-        {/* TopBar */}
-        <div className="topbar">
-          <div className="flex items-center gap-3">
-            <button
-              className="mobile-menu-btn"
-              onClick={() => setMobileOpen(true)}
-              aria-label="Abrir menu"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
-              <Settings className="w-4 h-4 text-purple-400" />
-            </div>
-            <div>
-              <h2 className="text-base font-extrabold text-white tracking-tight">Configurações</h2>
-              <p className="text-[11px] text-slate-400 hidden sm:block">Parâmetros de postagem, agendamento e marca d&apos;água</p>
-            </div>
-          </div>
-          <button
-            onClick={() => handleSave()}
-            disabled={saving}
-            className="btn btn-primary btn-sm px-4"
-          >
-            {saving ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : saved ? (
-              <CheckCircle2 className="w-3.5 h-3.5" />
-            ) : (
-              <Save className="w-3.5 h-3.5" />
-            )}
-            <span>{saved ? "Alterações Salvas!" : "Salvar Alterações"}</span>
+      {error && (
+        <div className="alert alert-err" role="alert">
+          <AlertCircle />
+          <span className="flex-1">{error}</span>
+          <button type="button" className="btn btn-icon w-7 h-7 -my-1 -mr-1" aria-label="Fechar aviso" onClick={() => setError("")}>
+            <X />
           </button>
         </div>
+      )}
 
-        <div className="p-5 lg:p-7 max-w-5xl mx-auto w-full space-y-6">
-          {/* Error Alert */}
-          {error && (
-            <div className="flex items-center gap-2.5 p-3.5 rounded-xl bg-red-500/10 border border-red-500/25 text-red-400 text-xs">
-              <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
+      <div className="flex gap-8 items-start">
+        <nav aria-label="Seções" className="hidden lg:flex w-[200px] shrink-0 flex-col gap-0.5 sticky top-8">
+          {SECTIONS.map((s) => (
+            <a key={s.id} href={`#${s.id}`} className="nav-link h-[38px]">
+              {s.label}
+            </a>
+          ))}
+        </nav>
 
-          {/* ── Section 1: Marca d'Água Interativa ────────────────────── */}
-          <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md space-y-5">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
-                <ImageIcon className="w-5 h-5 text-purple-400" />
+        <div className="flex-1 min-w-0 flex flex-col gap-6">
+          {/* ── Conta Meta ───────────────────────────────────────── */}
+          <section id="meta" aria-labelledby="meta-title" className="card p-6 flex flex-col gap-[18px] scroll-mt-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <h2 id="meta-title" className="m-0 text-[17px] font-semibold">Conta Meta</h2>
+                <p className="m-0 text-muted">Página do Facebook e Instagram Business onde os reels são publicados</p>
               </div>
-              <div>
-                <h3 className="font-extrabold text-white text-sm sm:text-base">Logo & Marca d&apos;água Dinâmica</h3>
-                <p className="text-xs text-slate-400">
-                  Defina o posicionamento e o tamanho da sua logo em vídeo 9:16
-                </p>
-              </div>
+              <span className={connected ? "chip chip-ok" : "chip"}>{connected ? "Conectada" : "Não conectada"}</span>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-              {/* Phone Mockup Preview */}
-              <div className="lg:col-span-5 flex justify-center">
-                <div className="relative w-56 aspect-[9/16] rounded-3xl bg-zinc-950 border-4 border-zinc-800 shadow-[0_20px_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col items-center justify-between p-3">
-                  {/* Top Notch / Speaker */}
-                  <div className="w-16 h-3 rounded-full bg-zinc-800/80 mb-2" />
-
-                  {/* Video Mock Background */}
-                  <div className="absolute inset-0 bg-gradient-to-br from-indigo-950/60 via-purple-950/30 to-zinc-950 flex flex-col items-center justify-center p-4 text-center">
-                    <span className="text-[10px] uppercase font-bold tracking-widest text-slate-600">
-                      Prévia do Reel (9:16)
+            {connected ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="inset px-4 py-3.5 flex items-center gap-3 min-w-0">
+                  <Facebook className="w-5 h-5 text-info-ink shrink-0" />
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs text-faint">Página</span>
+                    <span className="font-semibold truncate">{settings.facebook_page_name || "Página conectada"}</span>
+                  </div>
+                </div>
+                <div className="inset px-4 py-3.5 flex items-center gap-3 min-w-0">
+                  <Instagram className="w-5 h-5 text-[#f08bc0] shrink-0" />
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs text-faint">Instagram Business</span>
+                    <span className={`font-semibold truncate ${pageWithoutInstagram ? "text-warn-ink" : ""}`}>
+                      {settings.instagram_username ? `@${settings.instagram_username}` : "Não vinculado à página"}
                     </span>
-                  </div>
-
-                  {/* Watermark Logo Element */}
-                  <div className={`absolute z-10 ${getWatermarkPositionClasses()} transition-all duration-300 pointer-events-none`}>
-                    {logoPreview ? (
-                      <img
-                        src={logoPreview}
-                        alt="Watermark"
-                        style={{ width: `${Math.max(24, Math.round(settings.logo_scale * 0.4))}px` }}
-                        className="object-contain drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
-                      />
-                    ) : (
-                      <div
-                        style={{ width: `${Math.max(28, Math.round(settings.logo_scale * 0.4))}px` }}
-                        className="p-1 rounded bg-purple-600 text-white font-black text-[8px] text-center shadow-md"
-                      >
-                        LOGO
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Bottom Home Indicator */}
-                  <div className="w-20 h-1 rounded-full bg-zinc-700/60 mt-auto" />
-                </div>
-              </div>
-
-              {/* Controls */}
-              <div className="lg:col-span-7 space-y-5">
-                {/* Upload Section */}
-                <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-xl bg-black/40 border border-white/10 flex items-center justify-center overflow-hidden p-2">
-                      {logoPreview ? (
-                        <img src={logoPreview} alt="Logo" className="max-w-full max-h-full object-contain" />
-                      ) : (
-                        <Upload className="w-5 h-5 text-slate-500" />
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold text-white">Arquivo da Marca</p>
-                      <p className="text-[11px] text-slate-400">
-                        {logoPreview ? "PNG transparente fica melhor" : "Sem marca d'água: os vídeos saem sem logo"}
-                      </p>
-                    </div>
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    className="hidden"
-                    onChange={handleLogoUpload}
-                  />
-                  <div className="flex items-center gap-2">
-                    {logoPreview && (
-                      <button
-                        onClick={handleLogoRemove}
-                        disabled={uploadingLogo}
-                        className="btn btn-secondary btn-sm"
-                      >
-                        <span>Remover</span>
-                      </button>
-                    )}
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={uploadingLogo}
-                      className="btn btn-secondary btn-sm"
-                    >
-                      {uploadingLogo ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                      <span>{logoPreview ? "Trocar Imagem" : "Enviar Logo"}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Interactive Position Buttons */}
-                <div>
-                  <label className="label mb-2">Posição na Tela do Reel</label>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {POSITIONS.map((p) => {
-                      const isSelected = settings.logo_position === p.value;
-                      return (
-                        <button
-                          key={p.value}
-                          type="button"
-                          onClick={() => updateSetting("logo_position", p.value as any)}
-                          className={`p-2.5 rounded-xl border text-xs font-semibold transition-all flex items-center justify-center gap-1.5 ${
-                            isSelected
-                              ? "bg-purple-600/20 border-purple-500 text-purple-200 shadow-sm"
-                              : "bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white hover:bg-white/[0.04]"
-                          }`}
-                        >
-                          <span className={`w-2 h-2 rounded-full ${isSelected ? "bg-purple-400" : "bg-zinc-600"}`} />
-                          <span>{p.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Scale Slider */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="label mb-0">Escala da Logo</label>
-                    <span className="text-xs font-bold text-purple-400">{settings.logo_scale}px de largura</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={30}
-                    max={200}
-                    value={settings.logo_scale}
-                    onChange={(e) => updateSetting("logo_scale", Number(e.target.value))}
-                    className="w-full accent-purple-500 bg-white/10 h-1.5 rounded-lg appearance-none cursor-pointer"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── Section 2: Conexão com a Meta (Facebook & Instagram) ───── */}
-          <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-                <Link2 className="w-5 h-5 text-blue-400" />
-              </div>
-              <div>
-                <h3 className="font-extrabold text-white text-sm sm:text-base">Conexão Meta (Instagram & Facebook)</h3>
-                <p className="text-xs text-slate-400">
-                  Integração oficial via API do Instagram Graph para publicação automática
-                </p>
-              </div>
-            </div>
-
-            {settings.facebook_page_id ? (
-              <div className="p-4 rounded-xl border border-emerald-500/25 bg-emerald-500/5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Conta Conectada</span>
-                  </div>
-                  <button
-                    onClick={handleDisconnectFacebook}
-                    className="btn btn-danger btn-sm text-xs py-1"
-                  >
-                    <Unlink className="w-3 h-3" />
-                    <span>Desconectar</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.06]">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Facebook className="w-4 h-4 text-[#1877f2]" />
-                      <p className="text-xs font-semibold text-slate-400">Página do Facebook</p>
-                    </div>
-                    <p className="font-extrabold text-white text-sm">{settings.facebook_page_name || "Vinculada"}</p>
-                    <p className="text-[10px] text-slate-500 mt-0.5">ID: {settings.facebook_page_id}</p>
-                  </div>
-
-                  <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.06]">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Instagram className="w-4 h-4 text-[#e1306c]" />
-                      <p className="text-xs font-semibold text-slate-400">Instagram Business</p>
-                    </div>
-                    <p className="font-extrabold text-white text-sm">@{settings.instagram_username || "Vinculado"}</p>
-                    <p className="text-[10px] text-slate-500 mt-0.5">ID: {settings.instagram_business_account_id}</p>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.06] text-center space-y-3">
-                <p className="text-xs text-slate-300 max-w-md mx-auto leading-relaxed">
-                  Conecte seu perfil corporativo para habilitar postagens automáticas no Instagram Reels e página do Facebook simultaneamente.
+              <div className="inset p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <p className="m-0 text-ink-2 max-w-md">
+                  Conecte a sua página do Facebook para publicar os reels nela e no Instagram Business vinculado.
                 </p>
-                <button
-                  onClick={handleConnectFacebook}
-                  disabled={loadingPages}
-                  className="btn btn-primary text-xs py-2 px-5 rounded-xl shadow-lg"
-                >
-                  {loadingPages ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
-                  <span>Conectar Conta Meta</span>
+                <button type="button" onClick={handleConnectFacebook} disabled={loadingPages} className="btn btn-primary shrink-0">
+                  {loadingPages ? <Loader2 className="animate-spin" /> : <Link2 />}
+                  Conectar página
                 </button>
               </div>
             )}
 
-            {/* Onde publicar: estes interruptores sumiram na reformulação visual, mas o
-                pipeline continua obedecendo a eles — sem eles, quem desligou não conseguia religar */}
-            <div className="space-y-2">
-              {([
-                {
-                  key: "instagram_enabled" as const,
-                  label: "Publicar no Instagram",
-                  hint: settings.facebook_page_id && !settings.instagram_business_account_id
-                    ? "A página conectada não tem conta do Instagram Business vinculada"
-                    : "Publica os Reels no Instagram Business vinculado à página",
-                  warn: !!settings.facebook_page_id && !settings.instagram_business_account_id,
-                  Icon: Instagram,
-                  on: "bg-pink-600 shadow-[0_0_12px_rgba(219,39,119,0.5)]",
-                },
-                {
-                  key: "facebook_enabled" as const,
-                  label: "Publicar no Facebook",
-                  hint: "Publica os Reels na página do Facebook conectada",
-                  warn: false,
-                  Icon: Facebook,
-                  on: "bg-blue-600 shadow-[0_0_12px_rgba(37,99,235,0.5)]",
-                },
-              ]).map(({ key, label, hint, warn, Icon, on }) => (
-                <div key={key} className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
-                  <div className="flex items-center gap-3">
-                    <Icon className={`w-4 h-4 ${settings[key] ? "text-white" : "text-slate-500"}`} />
-                    <div>
-                      <p className={`text-xs font-bold ${settings[key] ? "text-white" : "text-slate-500"}`}>{label}</p>
-                      <p className={`text-[11px] ${warn && settings[key] ? "text-amber-400" : "text-slate-400"}`}>{hint}</p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    aria-label={label}
-                    aria-pressed={settings[key]}
-                    onClick={() => updateSetting(key, !settings[key])}
-                    className={`relative w-12 h-6 rounded-full transition-colors ${settings[key] ? on : "bg-zinc-800"}`}
-                  >
-                    <span
-                      className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                        settings[key] ? "left-7" : "left-1"
-                      }`}
-                    />
-                  </button>
+            <div className="flex flex-col border-t border-line">
+              <div className="flex items-center justify-between gap-4 py-3 border-b border-line">
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-medium">Publicar no Instagram</span>
+                  <span className={`text-[13px] ${pageWithoutInstagram && settings.instagram_enabled ? "text-warn-ink" : "text-muted"}`}>
+                    {pageWithoutInstagram
+                      ? "A página conectada não tem conta do Instagram Business vinculada"
+                      : "Reels no Instagram Business vinculado à página"}
+                  </span>
                 </div>
-              ))}
-              {!settings.instagram_enabled && !settings.facebook_enabled && (
-                <p className="text-[11px] text-amber-400">
-                  Com as duas opções desligadas, nenhum vídeo será publicado.
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* ── Section 3: Agendamento & Frequência ─────────────────────── */}
-          <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md space-y-5">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-                <Clock className="w-5 h-5 text-amber-400" />
+                <Switch
+                  label="Publicar no Instagram"
+                  checked={settings.instagram_enabled}
+                  onChange={(v) => updateSetting("instagram_enabled", v)}
+                />
               </div>
-              <div>
-                <h3 className="font-extrabold text-white text-sm sm:text-base">Ciclos de Automação & Limites</h3>
-                <p className="text-xs text-slate-400">
-                  Ajuste a frequência de varredura das fontes e intervalo de publicação
-                </p>
+              <div className="flex items-center justify-between gap-4 py-3 border-b border-line">
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-medium">Publicar no Facebook</span>
+                  <span className="text-[13px] text-muted">Reels na página do Facebook conectada</span>
+                </div>
+                <Switch
+                  label="Publicar no Facebook"
+                  checked={settings.facebook_enabled}
+                  onChange={(v) => updateSetting("facebook_enabled", v)}
+                />
               </div>
             </div>
 
+            {!settings.instagram_enabled && !settings.facebook_enabled && (
+              <div className="alert alert-warn">
+                <AlertCircle />
+                <span>Com as duas opções desligadas, nenhum vídeo será publicado.</span>
+              </div>
+            )}
+
+            {connected && (
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={handleConnectFacebook} disabled={loadingPages} className="btn btn-secondary btn-sm">
+                  {loadingPages && <Loader2 className="animate-spin" />}
+                  Trocar página
+                </button>
+                <button type="button" onClick={handleDisconnectFacebook} className="btn btn-danger btn-sm">
+                  Desconectar
+                </button>
+              </div>
+            )}
+          </section>
+
+          {/* ── Marca d'água ─────────────────────────────────────── */}
+          <section id="marca" aria-labelledby="marca-title" className="card p-6 flex flex-col gap-[18px] scroll-mt-6">
+            <div className="flex flex-col gap-1">
+              <h2 id="marca-title" className="m-0 text-[17px] font-semibold">Marca d&apos;água</h2>
+              <p className="m-0 text-muted">A sua logo, aplicada em todos os vídeos desta conta</p>
+            </div>
+
+            <div className="flex flex-col md:flex-row gap-7 items-center md:items-start">
+              <div
+                className="relative shrink-0 rounded-2xl bg-[#1d2024] border border-line-strong overflow-hidden"
+                style={{ width: PREVIEW_WIDTH, height: Math.round((PREVIEW_WIDTH * 16) / 9) }}
+                aria-label="Prévia da posição da marca d'água num vídeo 9:16"
+                role="img"
+              >
+                <div className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-2">
+                  <Play className="w-7 h-7 text-[#3a3e45]" fill="currentColor" aria-hidden="true" />
+                  <span className="text-xs text-faint">Prévia 9:16</span>
+                </div>
+                <div className="absolute left-3.5 right-14 bottom-14 flex flex-col gap-1.5" aria-hidden="true">
+                  <div className="h-2 rounded bg-line-strong" />
+                  <div className="h-2 w-[70%] rounded bg-line-strong" />
+                </div>
+                <div className={`absolute ${logoPlacement[settings.logo_position]} transition-all duration-200`} style={{ width: logoWidth }}>
+                  {logoPreview ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={logoPreview} alt="" className="w-full h-auto object-contain drop-shadow-[0_2px_6px_rgba(0,0,0,0.8)]" />
+                  ) : (
+                    <div className="rounded bg-accent text-on-accent font-display font-bold text-center leading-none py-1 overflow-hidden whitespace-nowrap" style={{ fontSize: Math.max(7, Math.round(logoWidth / 7)) }}>
+                      SUA LOGO
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex-1 min-w-0 w-full flex flex-col gap-[22px]">
+                <div className="inset p-3.5 flex flex-wrap items-center gap-3.5">
+                  <div className="w-16 h-10 rounded-lg bg-canvas flex items-center justify-center overflow-hidden p-1.5 shrink-0">
+                    {logoPreview ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={logoPreview} alt="Logo atual" className="max-w-full max-h-full object-contain" />
+                    ) : (
+                      <Upload className="w-4 h-4 text-faint" aria-hidden="true" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-[160px] flex flex-col gap-0.5">
+                    <span className="font-medium">{logoPreview ? "Logo enviada" : "Sem marca d'água"}</span>
+                    <span className="text-xs text-muted">
+                      {logoPreview ? "PNG, JPEG ou WebP · PNG transparente fica melhor" : "Os vídeos saem sem logo até você enviar uma"}
+                    </span>
+                  </div>
+                  <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handleLogoUpload} />
+                  <div className="flex gap-2">
+                    {logoPreview && (
+                      <button type="button" onClick={handleLogoRemove} disabled={uploadingLogo} className="btn btn-ghost btn-sm">
+                        Remover
+                      </button>
+                    )}
+                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingLogo} className="btn btn-secondary btn-sm">
+                      {uploadingLogo ? <Loader2 className="animate-spin" /> : <Upload />}
+                      {logoPreview ? "Trocar imagem" : "Enviar logo"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2.5">
+                  <span className="font-medium">Posição no vídeo</span>
+                  <div role="group" aria-label="Posição da marca d'água" className="grid grid-cols-3 gap-2 w-60">
+                    {POSITION_GRID.map((pos, i) =>
+                      pos ? (
+                        <button
+                          key={pos}
+                          type="button"
+                          aria-label={POSITION_LABELS[pos]}
+                          aria-pressed={settings.logo_position === pos}
+                          onClick={() => updateSetting("logo_position", pos)}
+                          className={`h-12 rounded-[9px] border flex items-center justify-center cursor-pointer transition-colors ${
+                            settings.logo_position === pos ? "border-accent bg-accent/10" : "border-line-strong bg-inset hover:bg-raised"
+                          }`}
+                        >
+                          <span className={`w-2.5 h-2.5 rounded-[3px] ${settings.logo_position === pos ? "bg-accent" : "bg-[#4a4f57]"}`} />
+                        </button>
+                      ) : (
+                        <div key={`vazio-${i}`} className="h-12" aria-hidden="true" />
+                      )
+                    )}
+                  </div>
+                  <span className="text-[13px] text-muted">{POSITION_LABELS[settings.logo_position]}</span>
+                </div>
+
+                <label className="flex flex-col gap-2.5">
+                  <span className="flex justify-between">
+                    <span className="font-medium">Tamanho da logo</span>
+                    <span className="font-mono text-ink-2">{settings.logo_scale} px</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={40}
+                    max={400}
+                    step={10}
+                    value={settings.logo_scale}
+                    onChange={(e) => updateSetting("logo_scale", Number(e.target.value))}
+                    className="w-full h-11 cursor-pointer"
+                  />
+                  <span className="text-xs text-faint">Largura da logo num vídeo de 1080 px</span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          {/* ── Automação ────────────────────────────────────────── */}
+          <section id="automacao" aria-labelledby="auto-title" className="card p-6 flex flex-col gap-[18px] scroll-mt-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <h2 id="auto-title" className="m-0 text-[17px] font-semibold">Automação</h2>
+                <p className="m-0 text-muted">Frequência das coletas e ritmo das publicações</p>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-[13px] text-ink-2">Publicação automática</span>
+                <Switch label="Publicação automática" checked={settings.auto_publish} onChange={(v) => updateSetting("auto_publish", v)} />
+              </div>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="label">Frequência da Automação (Cron)</label>
-                <select
-                  value={settings.cron_schedule}
-                  onChange={(e) => updateSetting("cron_schedule", e.target.value)}
-                  className="select"
-                >
+                <label className="label" htmlFor="cron">Frequência da automação</label>
+                <select id="cron" value={settings.cron_schedule} onChange={(e) => updateSetting("cron_schedule", e.target.value)} className="select">
                   {CRON_PRESETS.map((p) => (
                     <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
               </div>
-
               <div>
-                <label className="label">Vídeos Descobertos por Ciclo</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={settings.discovery_limit}
-                  onChange={(e) => updateSetting("discovery_limit", Number(e.target.value))}
-                  className="input"
-                />
+                <label className="label" htmlFor="discovery-limit">Vídeos por coleta</label>
+                <input id="discovery-limit" type="number" min={1} max={50} value={settings.discovery_limit} onChange={(e) => updateSetting("discovery_limit", Number(e.target.value))} className="input" />
               </div>
-
               <div>
-                <label className="label">Intervalo Mínimo entre Postagens (minutos)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={1440}
-                  value={settings.publish_interval_minutes}
-                  onChange={(e) => updateSetting("publish_interval_minutes", Number(e.target.value))}
-                  className="input"
-                />
-                <p className="text-[11px] text-slate-500 mt-1">Evita múltiplos posts em sequência (ex: 30 min).</p>
+                <label className="label" htmlFor="publish-interval">Intervalo entre publicações (min)</label>
+                <input id="publish-interval" type="number" min={0} max={1440} value={settings.publish_interval_minutes} onChange={(e) => updateSetting("publish_interval_minutes", Number(e.target.value))} className="input" />
+                <p className="hint">No máximo 1 reel publicado a cada intervalo</p>
               </div>
-
               <div>
-                <label className="label">Intervalo de Varredura por Perfil (minutos)</label>
-                <input
-                  type="number"
-                  min={5}
-                  max={1440}
-                  value={settings.discovery_interval_minutes}
-                  onChange={(e) => updateSetting("discovery_interval_minutes", Number(e.target.value))}
-                  className="input"
-                />
-                <p className="text-[11px] text-slate-500 mt-1">Economiza cotas de scraping da Bright Data.</p>
+                <label className="label" htmlFor="discovery-interval">Intervalo de coleta por fonte (min)</label>
+                <input id="discovery-interval" type="number" min={5} max={1440} value={settings.discovery_interval_minutes} onChange={(e) => updateSetting("discovery_interval_minutes", Number(e.target.value))} className="input" />
+                <p className="hint">Economiza créditos da Bright Data</p>
               </div>
             </div>
+          </section>
 
-            {/* Auto Publish Switch */}
-            <div className="flex items-center justify-between p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
-              <div className="flex items-center gap-3">
-                <Zap className="w-4 h-4 text-purple-400" />
-                <div>
-                  <p className="text-xs font-bold text-white">Publicação Totalmente Automática</p>
-                  <p className="text-[11px] text-slate-400">
-                    Publica os vídeos processados no Instagram/Facebook assim que ficarem prontos
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => updateSetting("auto_publish", !settings.auto_publish)}
-                className={`relative w-12 h-6 rounded-full transition-colors ${
-                  settings.auto_publish ? "bg-purple-600 shadow-[0_0_12px_rgba(147,51,234,0.5)]" : "bg-zinc-800"
-                }`}
-              >
-                <span
-                  className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                    settings.auto_publish ? "left-7" : "left-1"
-                  }`}
-                />
-              </button>
+          {/* ── Legendas ─────────────────────────────────────────── */}
+          <section id="legendas" aria-labelledby="leg-title" className="card p-6 flex flex-col gap-[18px] scroll-mt-6">
+            <div className="flex flex-col gap-1">
+              <h2 id="leg-title" className="m-0 text-[17px] font-semibold">Legendas</h2>
+              <p className="m-0 text-muted">Reescrita em tom jornalístico e hashtags sobre o assunto</p>
             </div>
-          </div>
-
-          {/* ── Section 4: Template de Legenda ─────────────────────────── */}
-          <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/[0.08] backdrop-blur-md space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-pink-500/10 border border-pink-500/20 flex items-center justify-center">
-                <Tag className="w-5 h-5 text-pink-400" />
-              </div>
-              <div>
-                <h3 className="font-extrabold text-white text-sm sm:text-base">Template e Prefixo de Legendas</h3>
-                <p className="text-xs text-slate-400">
-                  Personalize o texto que acompanha cada vídeo postado
-                </p>
-              </div>
+            <div className="flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="chip chip-accent">
+                <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                Reescrita automática com IA
+              </span>
+              <span className="chip">Principal: Gemini</span>
+              <span className="chip">Reserva: OpenAI</span>
             </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-slate-400">Inserir tags rápidas:</span>
-                <button
-                  type="button"
-                  onClick={() => appendTagToTemplate("{caption}")}
-                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 transition-colors"
-                >
-                  + {"{caption}"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => appendTagToTemplate("{hashtags}")}
-                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30 hover:bg-pink-500/30 transition-colors"
-                >
-                  + {"{hashtags}"}
-                </button>
-              </div>
-
+            <div>
+              <label className="label" htmlFor="template">Modelo da legenda (opcional)</label>
               <textarea
+                id="template"
                 value={settings.custom_caption_template}
                 onChange={(e) => updateSetting("custom_caption_template", e.target.value)}
-                placeholder="Ex: Assista até o final! 🔥&#10;&#10;{caption}&#10;&#10;Siga nossa página para mais vídeos como este!&#10;&#10;{hashtags}"
-                rows={4}
-                className="input resize-none text-white placeholder-slate-500"
+                placeholder={"Em branco: legenda reescrita + hashtags.\nExemplo:\n{caption}\n\nSiga a página para mais notícias!\n\n{hashtags}"}
+                rows={5}
+                className="textarea font-mono text-[13px]"
               />
             </div>
-          </div>
-
-          {/* Page Selection Modal */}
-          {showPageSelector && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
-              <motion.div
-                initial={{ scale: 0.95, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                className="w-full max-w-lg p-6 rounded-2xl bg-[#12121c] border border-white/10 shadow-[0_25px_60px_rgba(0,0,0,0.8)] space-y-4"
-              >
-                <h3 className="text-base font-extrabold text-white">Selecione a Página do Facebook</h3>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Selecione qual página deseja vincular para o envio automático de vídeos.
-                </p>
-                
-                <div className="space-y-2.5 max-h-72 overflow-y-auto">
-                  {availablePages.map((page) => (
-                    <div
-                      key={page.id}
-                      onClick={() => handleSelectPage(page.id)}
-                      className="p-3.5 rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.06] transition-colors cursor-pointer flex items-center justify-between"
-                    >
-                      <div>
-                        <p className="font-bold text-white text-sm">{page.name}</p>
-                        <p className="text-[11px] text-slate-500">Facebook ID: {page.id}</p>
-                        {page.instagram_business_account ? (
-                          <p className="text-xs text-purple-400 mt-0.5">Instagram: @{page.instagram_business_account.username}</p>
-                        ) : (
-                          <p className="text-xs text-amber-400 mt-0.5">⚠️ Sem Instagram Business vinculado</p>
-                        )}
-                      </div>
-                      <span className="btn btn-secondary btn-sm text-xs">Conectar</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex justify-end gap-2 pt-2">
-                  <button onClick={() => setShowPageSelector(false)} className="btn btn-secondary btn-sm">
-                    Fechar
-                  </button>
-                </div>
-              </motion.div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-faint">Inserir:</span>
+              <button type="button" onClick={() => appendTagToTemplate("{caption}")} className="btn btn-ghost btn-sm font-mono text-xs h-8">
+                {"{caption}"}
+              </button>
+              <button type="button" onClick={() => appendTagToTemplate("{hashtags}")} className="btn btn-ghost btn-sm font-mono text-xs h-8">
+                {"{hashtags}"}
+              </button>
             </div>
-          )}
+          </section>
         </div>
-      </main>
-    </div>
+      </div>
+
+      {showPageSelector && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setShowPageSelector(false)} aria-hidden="true" />
+          <div role="dialog" aria-modal="true" aria-labelledby="page-picker-title" className="relative w-full max-w-lg card p-6 flex flex-col gap-4 shadow-[0_24px_60px_rgba(0,0,0,0.6)]">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <h2 id="page-picker-title" className="m-0 text-[17px] font-semibold">Escolha a página</h2>
+                <p className="m-0 text-[13px] text-muted">Os reels desta conta serão publicados nela.</p>
+              </div>
+              <button type="button" className="btn btn-icon -mr-2 -mt-2" aria-label="Fechar" onClick={() => setShowPageSelector(false)}>
+                <X />
+              </button>
+            </div>
+            <ul className="m-0 p-0 list-none flex flex-col gap-2 max-h-80 overflow-y-auto">
+              {availablePages.map((page) => (
+                <li key={page.id}>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPage(page.id)}
+                    className="w-full text-left inset p-3.5 flex items-center justify-between gap-3 border border-line hover:border-line-strong cursor-pointer"
+                  >
+                    <span className="flex flex-col gap-0.5 min-w-0">
+                      <span className="font-semibold truncate">{page.name}</span>
+                      {page.instagram_business_account ? (
+                        <span className="text-xs text-muted">Instagram: @{page.instagram_business_account.username}</span>
+                      ) : (
+                        <span className="text-xs text-warn-ink">Sem Instagram Business vinculado</span>
+                      )}
+                    </span>
+                    <span className="chip shrink-0">Escolher</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+    </AppShell>
   );
 }
