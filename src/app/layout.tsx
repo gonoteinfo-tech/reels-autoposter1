@@ -1,29 +1,12 @@
 import type { Metadata } from "next";
-import { Bricolage_Grotesque, IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+// Fontes embutidas no projeto (pacotes @fontsource): o build não depende de baixar
+// nada do Google — o next/font/google quebrava o build com Turbopack na VPS.
+import "@fontsource-variable/bricolage-grotesque/index.css"; // títulos
+import "@fontsource/ibm-plex-sans/latin-400.css"; // texto e interface
+import "@fontsource/ibm-plex-sans/latin-500.css";
+import "@fontsource/ibm-plex-sans/latin-600.css";
+import "@fontsource/ibm-plex-mono/latin-500.css"; // números, horários e códigos
 import "./globals.css";
-
-/** Títulos */
-const display = Bricolage_Grotesque({
-  subsets: ["latin"],
-  variable: "--font-display-family",
-  display: "swap",
-});
-
-/** Texto corrido e interface */
-const body = IBM_Plex_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-body-family",
-  display: "swap",
-});
-
-/** Números, horários e códigos */
-const mono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["500"],
-  variable: "--font-mono-family",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "GO POST — Automação de Reels para Instagram e Facebook",
@@ -38,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="pt-BR" className={`${display.variable} ${body.variable} ${mono.variable}`}>
+    <html lang="pt-BR">
       <body className="antialiased">{children}</body>
     </html>
   );
