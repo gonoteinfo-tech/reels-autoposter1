@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import type { PipelineResult, ReelStage, User } from '@/types';
+import type { PipelineResult, ReelStage, SourceProfile, User } from '@/types';
 import {
   initDatabase,
   getActiveSources,
@@ -17,6 +17,7 @@ import {
   getUserById,
   getLastPublishedAt,
   setSourcePendingSnapshot,
+  clearSourcePendingSnapshotIf,
   isVideoFileUsedByPendingReel,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, hasCookiesConfigured } from './instagram-downloader';
@@ -60,6 +61,74 @@ function removeLocalVideoFiles(reel: { id: number; local_path: string | null; pr
   updateReel(reel.id, { local_path: null, processed_path: null });
   if (freedBytes > 0) {
     console.log(`🧹 Reel #${reel.id}: arquivos locais apagados após a publicação (${(freedBytes / 1024 / 1024).toFixed(1)} MB liberados)`);
+  }
+}
+
+/** Resultado de uma tentativa de recolher a coleta pendente de um perfil-fonte */
+export type PendingCollectResult =
+  | { status: 'pending' }
+  | { status: 'discarded'; reason: string }
+  | { status: 'done'; newReelIds: number[] };
+
+/**
+ * Recolhe (uma consulta, sem esperar) a coleta da Bright Data disparada para o perfil-fonte
+ * e cria os reels novos. Usado pelo ciclo automático e pela sincronização manual.
+ */
+export async function collectPendingDiscovery(
+  source: SourceProfile,
+  userId: number,
+  limit: number
+): Promise<PendingCollectResult> {
+  const snapshotId = source.pending_snapshot_id;
+  if (!snapshotId) return { status: 'discarded', reason: 'nenhuma coleta pendente' };
+
+  try {
+    const scrapedReels = await collectReelsDiscovery(snapshotId, source.username, limit);
+
+    if (!scrapedReels) {
+      const startedAt = new Date((source.pending_snapshot_at || '').replace(' ', 'T') + 'Z').getTime();
+      const ageMin = (Date.now() - startedAt) / 60000;
+      if (Number.isFinite(ageMin) && ageMin > BRIGHTDATA_PENDING_MAX_MINUTES) {
+        console.warn(`⚠️ [Bright Data] @${source.username}: coleta ${snapshotId} sem resultado há ${ageMin.toFixed(0)} min — descartada; será disparada de novo.`);
+        clearSourcePendingSnapshotIf(source.id, snapshotId);
+        return { status: 'discarded', reason: 'coleta demorou demais' };
+      }
+      console.log(`🌐 [Bright Data] @${source.username}: coleta ainda em andamento`);
+      return { status: 'pending' };
+    }
+
+    const newReelIds: number[] = [];
+    for (const scrapedReel of scrapedReels) {
+      const reelUrl = scrapedReel.url;
+      const existing = getReelByUrl(reelUrl, userId)
+        || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, userId) : null);
+      if (existing) continue;
+
+      const created = createReel({
+        source_id: source.id,
+        source_username: source.username,
+        instagram_url: reelUrl,
+        instagram_id: scrapedReel.id,
+        // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
+        caption: '',
+        original_caption: scrapedReel.caption || '',
+        hashtags: scrapedReel.hashtags.join(' '),
+        user_id: userId,
+        // URL direta do vídeo: o download não precisa de cookies
+        direct_video_url: scrapedReel.videoUrl,
+      });
+      if (created) newReelIds.push(created.id); // null = já existia (coleta recolhida em paralelo)
+    }
+
+    clearSourcePendingSnapshotIf(source.id, snapshotId);
+    updateSourceLastChecked(source.id);
+    console.log(`🌐 [Bright Data] @${source.username}: ${newReelIds.length} novos reels descobertos`);
+    return { status: 'done', newReelIds };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`❌ [Bright Data] @${source.username}: falha ao recolher a coleta (${msg}) — será disparada de novo.`);
+    clearSourcePendingSnapshotIf(source.id, snapshotId);
+    return { status: 'discarded', reason: msg };
   }
 }
 
@@ -447,57 +516,10 @@ async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<
 
       const platform = (source as any).platform || 'instagram';
 
-      // ── Bright Data: recolher coleta disparada em ciclo anterior (uma consulta, sem esperar) ──
+      // ── Bright Data: recolher coleta disparada antes (uma consulta, sem esperar) ──
       if (platform === 'instagram' && isBrightDataConfigured() && source.pending_snapshot_id) {
-        try {
-          const scrapedReels = await collectReelsDiscovery(source.pending_snapshot_id, source.username, discoveryLimit);
-
-          if (!scrapedReels) {
-            const startedAt = new Date((source.pending_snapshot_at || '').replace(' ', 'T') + 'Z').getTime();
-            const ageMin = (Date.now() - startedAt) / 60000;
-            if (Number.isFinite(ageMin) && ageMin > BRIGHTDATA_PENDING_MAX_MINUTES) {
-              console.warn(`⚠️ [Bright Data] @${source.username}: coleta ${source.pending_snapshot_id} sem resultado há ${ageMin.toFixed(0)} min — descartada; será disparada de novo.`);
-              setSourcePendingSnapshot(source.id, null);
-            } else {
-              console.log(`🌐 [Bright Data] @${source.username}: coleta ainda em andamento — resultado no próximo ciclo`);
-            }
-            continue;
-          }
-
-          let newCount = 0;
-          for (const scrapedReel of scrapedReels) {
-            const reelUrl = scrapedReel.url;
-            const existing = getReelByUrl(reelUrl, user.id)
-              || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, user.id) : null);
-            if (existing) continue;
-
-            const created = createReel({
-              source_id: source.id,
-              source_username: source.username,
-              instagram_url: reelUrl,
-              instagram_id: scrapedReel.id,
-              // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
-              caption: '',
-              original_caption: scrapedReel.caption || '',
-              hashtags: scrapedReel.hashtags.join(' '),
-              user_id: user.id,
-              // URL direta do vídeo: o download não precisa de cookies
-              direct_video_url: scrapedReel.videoUrl,
-            });
-            if (!created) continue; // já existia (ex.: varredura manual simultânea)
-
-            newCount++;
-            totalDiscovered++;
-          }
-
-          setSourcePendingSnapshot(source.id, null);
-          updateSourceLastChecked(source.id);
-          console.log(`🌐 [Bright Data] @${source.username}: ${newCount} novos reels descobertos`);
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          console.error(`❌ [Bright Data] @${source.username}: falha ao recolher a coleta (${msg}) — será disparada de novo.`);
-          setSourcePendingSnapshot(source.id, null);
-        }
+        const result = await collectPendingDiscovery(source, user.id, discoveryLimit);
+        if (result.status === 'done') totalDiscovered += result.newReelIds.length;
         continue;
       }
 
