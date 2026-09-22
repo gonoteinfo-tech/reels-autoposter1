@@ -706,6 +706,18 @@ export function isVideoFileUsedByPendingReel(filePath: string, exceptReelId: num
 }
 
 /**
+ * Limpa a coleta pendente só se ela ainda for a informada — evita que um processo
+ * atrasado apague uma coleta mais nova disparada por outro (ciclo x sincronização manual).
+ */
+export function clearSourcePendingSnapshotIf(id: number, snapshotId: string): void {
+  const database = getDb();
+  database.prepare(`
+    UPDATE source_profiles SET pending_snapshot_id = NULL, pending_snapshot_at = NULL
+    WHERE id = ? AND pending_snapshot_id = ?
+  `).run(id, snapshotId);
+}
+
+/**
  * Registra (ou limpa, com null) a coleta da Bright Data em andamento de um perfil-fonte.
  */
 export function setSourcePendingSnapshot(id: number, snapshotId: string | null): void {

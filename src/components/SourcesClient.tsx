@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus,
@@ -36,6 +36,11 @@ export default function SourcesClient({ user }: { user: User }) {
   const [addError, setAddError] = useState("");
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [syncingId, setSyncingId] = useState<number | null>(null);
+  const [syncNotice, setSyncNotice] = useState<{ type: "info" | "error"; text: string } | null>(null);
+  const refreshTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  // Cancelar as atualizações agendadas ao sair da página
+  useEffect(() => () => refreshTimers.current.forEach(clearTimeout), []);
 
   const fetchSources = useCallback(async () => {
     try {
@@ -61,14 +66,23 @@ export default function SourcesClient({ user }: { user: User }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sourceId: id }),
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+      if (data?.success) {
+        setSyncNotice({ type: "info", text: data.message || "Sincronização iniciada." });
         fetchSources();
+        // A coleta roda em segundo plano: atualizar a lista algumas vezes enquanto os vídeos chegam
+        if (data.data?.pending) {
+          refreshTimers.current.forEach(clearTimeout);
+          refreshTimers.current = [30, 60, 120, 180].map((sec) => setTimeout(fetchSources, sec * 1000));
+        }
       } else {
-        alert("Erro na importação: " + data.error);
+        setSyncNotice({
+          type: "error",
+          text: data?.error || `Não foi possível sincronizar (resposta ${res.status} do servidor). Tente novamente.`,
+        });
       }
     } catch {
-      alert("Erro de conexão com o servidor");
+      setSyncNotice({ type: "error", text: "Sem conexão com o servidor. Verifique sua internet e tente novamente." });
     } finally {
       setSyncingId(null);
     }
@@ -140,6 +154,26 @@ export default function SourcesClient({ user }: { user: User }) {
       />
 
       <main className={`main-area relative z-10 ${sidebarCollapsed ? "collapsed" : ""}`}>
+        {syncNotice && (
+          <div
+            role="status"
+            className={`fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-lg p-3.5 rounded-xl border backdrop-blur-md flex items-start gap-2.5 text-xs shadow-2xl ${
+              syncNotice.type === "error"
+                ? "bg-red-500/15 border-red-500/30 text-red-200"
+                : "bg-emerald-500/15 border-emerald-500/30 text-emerald-100"
+            }`}
+          >
+            {syncNotice.type === "error" ? (
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+            )}
+            <p className="flex-1 leading-relaxed">{syncNotice.text}</p>
+            <button type="button" aria-label="Fechar aviso" onClick={() => setSyncNotice(null)} className="opacity-70 hover:opacity-100">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         {/* TopBar */}
         <div className="topbar">
           <div className="flex items-center gap-3">

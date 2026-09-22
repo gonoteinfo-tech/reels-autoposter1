@@ -9,7 +9,8 @@
  * A Bright Data cuida de proxies residenciais e anti-bot automaticamente.
  */
 
-const BRIGHTDATA_API = 'https://api.brightdata.com';
+/** API da Bright Data (sobrescrevível para testes locais com um servidor simulado) */
+const BRIGHTDATA_API = process.env.BRIGHTDATA_API_URL || 'https://api.brightdata.com';
 
 /** Dataset oficial de Instagram Reels (sobrescrevível por env) */
 const DEFAULT_REELS_DATASET = 'gd_lyclm20il4r5helnj';
