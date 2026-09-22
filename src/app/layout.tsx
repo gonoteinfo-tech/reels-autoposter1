@@ -1,17 +1,34 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Bricolage_Grotesque, IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
+/** Títulos */
+const display = Bricolage_Grotesque({
   subsets: ["latin"],
-  variable: "--font-inter",
+  variable: "--font-display-family",
+  display: "swap",
+});
+
+/** Texto corrido e interface */
+const body = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-body-family",
+  display: "swap",
+});
+
+/** Números, horários e códigos */
+const mono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["500"],
+  variable: "--font-mono-family",
   display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "Reels AutoPoster — Automação de Reels Instagram & Facebook",
+  title: "GO POST — Automação de Reels para Instagram e Facebook",
   description:
-    "Sistema automatizado para coletar, reprocessar com logo e republicar Reels no Instagram e Facebook.",
+    "Acompanha perfis de referência, aplica a sua marca d'água, reescreve legendas com IA e publica Reels no Instagram e no Facebook.",
   icons: { icon: "/favicon.ico" },
 };
 
@@ -21,7 +38,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="pt-BR" className={inter.variable}>
+    <html lang="pt-BR" className={`${display.variable} ${body.variable} ${mono.variable}`}>
       <body className="antialiased">{children}</body>
     </html>
   );

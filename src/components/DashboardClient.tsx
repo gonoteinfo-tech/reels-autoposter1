@@ -1,44 +1,35 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  Plus,
-  RefreshCw,
-  Zap,
-  AlertTriangle,
-  Play,
-  Clock,
-  Loader2,
-  CheckCircle2,
-  Filter,
-  Search,
-  Menu,
-  Layers,
-  Sparkles,
-  ArrowRight,
-  TrendingUp,
-} from "lucide-react";
-import { Instagram, Facebook } from "@/components/icons";
+import Link from "next/link";
+import { Plus, RefreshCw, Loader2, Search, Clock } from "lucide-react";
 
-import Sidebar from "@/components/Sidebar";
+import AppShell, { PageHeader } from "@/components/AppShell";
 import StatCard from "@/components/StatCard";
 import ReelCard from "@/components/ReelCard";
 import AddReelModal from "@/components/AddReelModal";
+import { clockTime, timeAgo, timeUntil } from "@/components/time";
 import type { Reel, DashboardStats, SchedulerStatus, User } from "@/types";
 
 const STAGE_FILTERS: { value: string; label: string }[] = [
   { value: "all", label: "Todos" },
-  { value: "discovered", label: "Descobertos" },
+  { value: "discovered", label: "Na fila" },
   { value: "processing", label: "Processando" },
   { value: "uploaded", label: "Prontos" },
   { value: "published", label: "Publicados" },
   { value: "error", label: "Erros" },
 ];
 
+/** Etapas mostradas na faixa do pipeline e os estágios que cada uma agrupa */
+const PIPELINE_STEPS: { label: string; stages: Reel["stage"][]; final?: boolean }[] = [
+  { label: "Descoberta", stages: ["discovered"] },
+  { label: "Download", stages: ["downloading", "downloaded"] },
+  { label: "Marca d'água", stages: ["processing", "processed"] },
+  { label: "Upload", stages: ["uploading", "uploaded"] },
+  { label: "Publicação", stages: ["publishing"], final: true },
+];
+
 export default function DashboardClient({ user }: { user: User }) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [reels, setReels] = useState<Reel[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
@@ -49,7 +40,6 @@ export default function DashboardClient({ user }: { user: User }) {
   const [triggeringRun, setTriggeringRun] = useState(false);
   const [reprocessingAll, setReprocessingAll] = useState(false);
 
-  // Fetch data
   const fetchData = useCallback(async () => {
     try {
       const [reelsRes, statsRes, schedulerRes] = await Promise.allSettled([
@@ -62,18 +52,16 @@ export default function DashboardClient({ user }: { user: User }) {
         const data = await reelsRes.value.json();
         if (data.success) setReels(data.data?.reels || []);
       }
-
       if (statsRes.status === "fulfilled" && statsRes.value.ok) {
         const data = await statsRes.value.json();
         if (data.success) setStats(data.data);
       }
-
       if (schedulerRes.status === "fulfilled" && schedulerRes.value.ok) {
         const data = await schedulerRes.value.json();
         if (data.success) setSchedulerStatus(data.data);
       }
     } catch {
-      // ignore network errors
+      // erros de rede: a próxima atualização tenta de novo
     } finally {
       setLoading(false);
     }
@@ -85,7 +73,6 @@ export default function DashboardClient({ user }: { user: User }) {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Actions
   const handleRunNow = async () => {
     setTriggeringRun(true);
     try {
@@ -118,11 +105,8 @@ export default function DashboardClient({ user }: { user: User }) {
   const handleReprocess = async (reelId: number) => {
     try {
       setReels((prev) =>
-        prev.map((r) =>
-          r.id === reelId ? { ...r, stage: "discovered" as const, error_message: null } : r
-        )
+        prev.map((r) => (r.id === reelId ? { ...r, stage: "discovered" as const, error_message: null } : r))
       );
-
       await fetch("/api/reels/reprocess", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -138,11 +122,8 @@ export default function DashboardClient({ user }: { user: User }) {
     setReprocessingAll(true);
     try {
       setReels((prev) =>
-        prev.map((r) =>
-          r.stage === "error" ? { ...r, stage: "discovered" as const, error_message: null } : r
-        )
+        prev.map((r) => (r.stage === "error" ? { ...r, stage: "discovered" as const, error_message: null } : r))
       );
-
       await fetch("/api/reels/reprocess", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -159,338 +140,267 @@ export default function DashboardClient({ user }: { user: User }) {
   const handleDelete = async (reelId: number) => {
     try {
       setReels((prev) => prev.filter((r) => r.id !== reelId));
-
-      await fetch(`/api/reels?id=${reelId}`, {
-        method: "DELETE",
-      });
+      await fetch(`/api/reels?id=${reelId}`, { method: "DELETE" });
       fetchData();
     } catch (error) {
       console.error("Erro ao excluir reel:", error);
     }
   };
 
-  // Filter reels
   const filteredReels = reels.filter((r) => {
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return (
-        r.caption?.toLowerCase().includes(q) ||
-        r.source_username?.toLowerCase().includes(q) ||
-        r.original_caption?.toLowerCase().includes(q)
-      );
-    }
-    return true;
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      r.caption?.toLowerCase().includes(q) ||
+      r.source_username?.toLowerCase().includes(q) ||
+      r.original_caption?.toLowerCase().includes(q)
+    );
   });
 
-  return (
-    <div className="app-layout">
-      {/* Ambient background glow */}
-      <div className="ambient-bg" />
+  const recentPublished = reels
+    .filter((r) => r.stage === "published" && r.published_at)
+    .sort((a, b) => (b.published_at || "").localeCompare(a.published_at || ""))
+    .slice(0, 5);
 
-      {/* Sidebar */}
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((v) => !v)}
-        user={user}
-        mobileOpen={mobileOpen}
-        onMobileClose={() => setMobileOpen(false)}
+  const nextInQueue = reels.find((r) => r.stage === "uploaded") || reels.find((r) => r.stage === "discovered");
+  const errorsToday = stats?.errors_today || 0;
+
+  const today = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+
+  const statusPill = schedulerStatus?.is_running
+    ? `Rodando agora${schedulerStatus.current_task ? ` · ${schedulerStatus.current_task}` : ""}`
+    : schedulerStatus?.scheduler_active
+      ? `Automação ativa${schedulerStatus.next_run_at ? ` · próximo ciclo ${timeUntil(schedulerStatus.next_run_at)}` : ""}`
+      : "Automação pausada";
+
+  return (
+    <AppShell user={user}>
+      <PageHeader
+        title="Painel"
+        subtitle={<span suppressHydrationWarning className="first-letter:uppercase inline-block">{today}</span>}
+        actions={
+          <>
+            {schedulerStatus && (
+              <span className="hidden xl:inline-flex h-10 items-center gap-2 px-3.5 rounded-full border border-line bg-surface text-ink-2">
+                <span className={`dot ${schedulerStatus.scheduler_active || schedulerStatus.is_running ? "bg-ok" : "bg-faint"}`} />
+                <span suppressHydrationWarning>{statusPill}</span>
+              </span>
+            )}
+            {errorsToday > 0 && (
+              <button type="button" onClick={handleReprocessAllFailed} disabled={reprocessingAll} className="btn btn-secondary" aria-label="Reprocessar falhas">
+                {reprocessingAll ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                <span className="hidden sm:inline">Reprocessar falhas</span>
+              </button>
+            )}
+            <button type="button" onClick={() => setShowAddModal(true)} className="btn btn-secondary" aria-label="Adicionar reel">
+              <Plus />
+              <span className="hidden sm:inline">Adicionar reel</span>
+            </button>
+            <button type="button" onClick={handleRunNow} disabled={triggeringRun} className="btn btn-primary">
+              {triggeringRun ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <polygon points="7 4 20 12 7 20 7 4" />
+                </svg>
+              )}
+              Rodar agora
+            </button>
+          </>
+        }
       />
 
-      {/* Main Area */}
-      <main className={`main-area relative z-10 ${sidebarCollapsed ? "collapsed" : ""}`}>
-        {/* TopBar */}
-        <div className="topbar">
-          <div className="flex items-center gap-3">
-            <button
-              className="mobile-menu-btn"
-              onClick={() => setMobileOpen(true)}
-              aria-label="Abrir menu"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-extrabold text-white tracking-tight">Painel de Controle</h2>
-                {schedulerStatus && (
-                  <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Ativo
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-400 hidden sm:block">
-                Gerencie pipeline de coleta, edição e publicação automática
-              </p>
-            </div>
+      {user.plan === "free" && stats && stats.published_total >= 1 && (
+        <div className="card p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border-accent/40">
+          <div className="flex flex-col gap-1">
+            <span className="font-semibold">Você usou a publicação do plano grátis</span>
+            <span className="text-[13px] text-muted">
+              Para continuar publicando no automático, com várias fontes, assine o plano Pro.
+            </span>
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleRunNow}
-              disabled={triggeringRun}
-              className="btn btn-secondary btn-sm"
-              title="Disparar ciclo de descoberta e postagem agora"
-            >
-              {triggeringRun ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
-              ) : (
-                <Play className="w-3.5 h-3.5 text-purple-400" />
-              )}
-              <span className="hidden sm:inline">Executar Agora</span>
-            </button>
-            <button
-              onClick={handleReprocessAllFailed}
-              disabled={reprocessingAll}
-              className="btn btn-secondary btn-sm"
-              title="Reprocessa todos os reels com falha"
-            >
-              {reprocessingAll ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
-              ) : (
-                <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
-              )}
-              <span className="hidden md:inline">Reprocessar Falhas</span>
-            </button>
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="btn btn-primary btn-sm"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Adicionar Reel</span>
-            </button>
-          </div>
+          <Link href="/#planos" className="btn btn-primary shrink-0">
+            Conhecer o Pro
+          </Link>
         </div>
+      )}
 
-        {/* Main Content Area */}
-        <div className="p-5 lg:p-7 space-y-6 max-w-7xl mx-auto w-full">
-          {/* Upgrade Banner for Free Plan */}
-          {user.plan === "free" && stats && stats.published_total >= 1 && (
-            <motion.div
-              initial={{ opacity: 0, y: -15 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="p-5 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 relative overflow-hidden bg-gradient-to-r from-purple-900/60 via-pink-900/50 to-orange-900/60 border border-purple-500/30 shadow-[0_10px_35px_rgba(139,92,246,0.2)]"
-            >
-              <div className="flex items-start gap-4 z-10">
-                <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 bg-gradient-to-br from-purple-500 to-pink-500 shadow-md shadow-purple-500/30">
-                  <Zap className="w-5 h-5 text-white" />
-                </div>
-                <div className="space-y-1">
-                  <h4 className="font-extrabold text-white text-sm md:text-base flex items-center gap-2">
-                    Limite do Plano Gratuito Atingido
-                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30">
-                      1 / 1 Publicação
-                    </span>
-                  </h4>
-                  <p className="text-xs text-slate-200 max-w-2xl leading-relaxed">
-                    Você utilizou a postagem gratuita de teste. Para continuar postando automaticamente sem limites, ter múltiplas fontes e suporte prioritário, faça o upgrade para o plano PRO.
-                  </p>
+      <section aria-label="Resumo do dia" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label="Publicados hoje"
+          value={stats?.published_today ?? 0}
+          caption={`${stats?.published_total ?? 0} no total`}
+        />
+        <StatCard label="Na fila" value={stats?.pipeline_queue ?? 0} caption="Aguardando processamento ou publicação" />
+        <StatCard
+          label="Erros hoje"
+          value={errorsToday}
+          tone="error"
+          caption={
+            errorsToday > 0 ? (
+              <button
+                type="button"
+                className="py-2.5 -my-2.5 px-0 border-0 bg-transparent text-err-ink cursor-pointer text-xs underline-offset-2 hover:underline"
+                onClick={() => setStageFilter("error")}
+              >
+                Ver na fila
+              </button>
+            ) : (
+              "Nenhum erro"
+            )
+          }
+        />
+        <StatCard
+          label="Fontes ativas"
+          value={stats?.active_sources ?? 0}
+          caption={`de ${stats?.total_sources ?? 0} cadastradas`}
+        />
+      </section>
+
+      <section aria-label="Etapas do pipeline" className="card px-6 py-5 flex flex-col gap-4">
+        <div className="flex items-baseline justify-between">
+          <h2 className="section-title">Pipeline agora</h2>
+          <span className="text-xs text-faint">Reels em cada etapa</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {PIPELINE_STEPS.map((step) => {
+            const count = reels.filter((r) => step.stages.includes(r.stage)).length;
+            return (
+              <div key={step.label} className="flex flex-col gap-2.5">
+                <div className={`h-1 rounded ${count > 0 ? (step.final ? "bg-accent" : "bg-info") : "bg-line-strong"}`} />
+                <div className="flex justify-between gap-2">
+                  <span className="text-ink-2">{step.label}</span>
+                  <span className={`font-mono tabular ${count > 0 ? "" : "text-faint"}`}>{count}</span>
                 </div>
               </div>
-              <div className="shrink-0 flex items-center gap-3 z-10 w-full md:w-auto justify-end">
-                <a
-                  href="/#pricing"
-                  className="btn btn-primary btn-sm whitespace-nowrap text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-1.5"
-                >
-                  <Zap className="w-3.5 h-3.5 fill-white" />
-                  Fazer Upgrade para PRO
-                </a>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="flex flex-col xl:flex-row gap-4 items-start">
+        <section id="fila" aria-label="Fila de reels" className="card w-full xl:flex-[2] min-w-0 flex flex-col">
+          <div className="px-5 py-4 flex flex-wrap items-center justify-between gap-3 border-b border-line">
+            <h2 className="section-title">Fila de reels</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-faint" aria-hidden="true" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar legenda ou @perfil"
+                  aria-label="Buscar na fila"
+                  className="input h-10 pl-9 w-60"
+                />
               </div>
-            </motion.div>
-          )}
-
-          {/* Stats Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard
-              label="Reels Hoje"
-              value={stats?.published_today || 0}
-              icon={<Instagram className="w-5 h-5" />}
-              color="#e1306c"
-              gradient="linear-gradient(90deg, #e1306c, #f97316)"
-              trend={{ value: 12, label: "vs ontem" }}
-            />
-            <StatCard
-              label="Total Publicados"
-              value={stats?.published_total || 0}
-              icon={<CheckCircle2 className="w-5 h-5" />}
-              color="#10b981"
-              gradient="linear-gradient(90deg, #10b981, #06b6d4)"
-              trend={{ value: 24, label: "este mês" }}
-            />
-            <StatCard
-              label="Na Fila"
-              value={stats?.pipeline_queue || 0}
-              icon={<Clock className="w-5 h-5" />}
-              color="#f59e0b"
-              gradient="linear-gradient(90deg, #f59e0b, #ec4899)"
-            />
-            <StatCard
-              label="Erros Hoje"
-              value={stats?.errors_today || 0}
-              icon={<AlertTriangle className="w-5 h-5" />}
-              color="#ef4444"
-              gradient="linear-gradient(90deg, #ef4444, #dc2626)"
-            />
-          </div>
-
-          {/* Pipeline Stage Quick Overview Bar */}
-          <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/[0.07] flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-purple-400" />
-              <span className="text-xs font-bold text-white uppercase tracking-wider">Status do Pipeline</span>
-            </div>
-            <div className="flex items-center gap-2 sm:gap-4 text-xs font-medium text-slate-400">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-blue-500" />
-                Descobertos: <strong className="text-white">{reels.filter(r => r.stage === 'discovered').length}</strong>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                Processando: <strong className="text-white">{reels.filter(r => ['downloading', 'processing', 'uploading'].includes(r.stage)).length}</strong>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                Prontos: <strong className="text-white">{reels.filter(r => r.stage === 'uploaded').length}</strong>
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-pink-500" />
-                Publicados: <strong className="text-white">{reels.filter(r => r.stage === 'published').length}</strong>
-              </span>
+              <button type="button" onClick={fetchData} className="btn btn-icon" aria-label="Atualizar lista" title="Atualizar lista">
+                <RefreshCw />
+              </button>
             </div>
           </div>
 
-          {/* Search & Filter Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-white/[0.02] border border-white/[0.07]">
-            {/* Search Input */}
-            <div className="relative flex-1 min-w-[240px]">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Buscar por legenda, @perfil ou hashtags..."
-                className="input input-with-icon py-2 text-sm bg-black/40 border-white/[0.08] text-white placeholder-slate-500"
-              />
+          <div className="px-5 py-3 border-b border-line overflow-x-auto">
+            <div className="segmented" role="group" aria-label="Filtrar por etapa">
+              {STAGE_FILTERS.map((f) => (
+                <button key={f.value} type="button" aria-pressed={stageFilter === f.value} onClick={() => setStageFilter(f.value)}>
+                  {f.label}
+                </button>
+              ))}
             </div>
-
-            {/* Stage filter pills */}
-            <div className="flex items-center gap-1 overflow-x-auto py-1 max-w-full">
-              <Filter className="w-3.5 h-3.5 text-slate-500 mr-1 hidden sm:block shrink-0" />
-              {STAGE_FILTERS.map((f) => {
-                const count = f.value === 'all' 
-                  ? reels.length 
-                  : reels.filter(r => f.value === 'processing' ? ['downloading', 'processing', 'uploading'].includes(r.stage) : r.stage === f.value).length;
-                const isSelected = stageFilter === f.value;
-
-                return (
-                  <button
-                    key={f.value}
-                    onClick={() => setStageFilter(f.value)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                      isSelected
-                        ? "bg-purple-600/20 text-purple-200 border border-purple-500/40 shadow-sm"
-                        : "text-slate-400 hover:text-white hover:bg-white/[0.04] border border-transparent"
-                    }`}
-                  >
-                    <span>{f.label}</span>
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
-                      isSelected ? "bg-purple-500/30 text-white" : "bg-white/[0.06] text-slate-400"
-                    }`}>
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Refresh Button */}
-            <button
-              onClick={fetchData}
-              className="btn btn-secondary btn-sm px-2.5"
-              title="Atualizar lista"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-slate-400 hover:text-white" />
-            </button>
           </div>
 
-          {/* Reels Content Grid */}
+          <div className="hidden md:grid grid-cols-[minmax(0,1fr)_128px_84px_auto] gap-x-4 px-5 py-2.5 text-xs text-faint border-b border-line">
+            <span>Reel</span>
+            <span>Etapa</span>
+            <span>Quando</span>
+            <span className="text-right">Ações</span>
+          </div>
+
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-24">
-              <div className="w-12 h-12 rounded-2xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4">
-                <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
-              </div>
-              <p className="text-sm font-medium text-slate-400">
-                Sincronizando pipeline de Reels...
-              </p>
+            <div className="flex items-center justify-center gap-3 py-16 text-muted">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Carregando a fila...
             </div>
           ) : filteredReels.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex flex-col items-center justify-center py-20 text-center rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.01] p-8"
-            >
-              <motion.div
-                animate={{ y: [0, -6, 0] }}
-                transition={{ repeat: Infinity, duration: 3, ease: "easeInOut" }}
-              >
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/10 to-orange-500/10 border border-purple-500/20 flex items-center justify-center mb-4 shadow-inner">
-                  <Sparkles className="w-8 h-8 text-purple-400" />
-                </div>
-              </motion.div>
-              <h3 className="text-base font-bold text-white mb-1.5">
-                Nenhum Reel encontrado
-              </h3>
-              <p className="text-xs text-slate-400 max-w-sm mb-5 leading-relaxed">
-                Adicione perfis na aba <strong>Fontes</strong> para coletar automaticamente ou adicione links de vídeos manualmente.
-              </p>
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="btn btn-primary text-xs py-2 px-4 rounded-xl"
-              >
-                <Plus className="w-4 h-4" />
-                Adicionar Primeiro Reel
+            <div className="flex flex-col items-center text-center gap-3 px-6 py-16">
+              <span className="font-semibold">Nenhum reel por aqui</span>
+              <span className="text-[13px] text-muted max-w-sm">
+                Cadastre perfis em <strong className="text-ink-2">Fontes</strong> para a coleta automática ou adicione um link manualmente.
+              </span>
+              <button type="button" onClick={() => setShowAddModal(true)} className="btn btn-primary mt-2">
+                <Plus />
+                Adicionar reel
               </button>
-            </motion.div>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-              <AnimatePresence>
-                {filteredReels.map((reel) => (
-                  <ReelCard
-                    key={reel.id}
-                    reel={reel}
-                    onPublish={handlePublish}
-                    onReprocess={handleReprocess}
-                    onDelete={handleDelete}
-                  />
-                ))}
-              </AnimatePresence>
             </div>
+          ) : (
+            <ul className="m-0 p-0 list-none">
+              {filteredReels.map((reel) => (
+                <ReelCard
+                  key={reel.id}
+                  reel={reel}
+                  onPublish={handlePublish}
+                  onReprocess={handleReprocess}
+                  onDelete={handleDelete}
+                />
+              ))}
+            </ul>
           )}
 
-          {/* Footer Bar */}
-          <div className="flex items-center justify-between text-xs px-4 py-3 rounded-xl bg-white/[0.02] border border-white/[0.06] text-slate-400">
-            <span>
-              Mostrando <strong className="text-white">{filteredReels.length}</strong> de <strong className="text-white">{reels.length}</strong> reels
-            </span>
-            <div className="flex items-center gap-4 text-[11px]">
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                {stats?.active_sources || 0} fontes ativas
-              </span>
-              <span className="flex items-center gap-1.5">
-                <Clock className="w-3 h-3 text-slate-500" />
-                Varredura periódica ativa
-              </span>
-            </div>
+          <div className="px-5 py-3 border-t border-line text-xs text-faint">
+            Mostrando {filteredReels.length} de {reels.length} reels
           </div>
-        </div>
-      </main>
+        </section>
 
-      {/* Add Reel Modal */}
-      <AddReelModal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        onAdded={fetchData}
-      />
-    </div>
+        <div className="w-full xl:flex-1 min-w-0 flex flex-col gap-4">
+          <section aria-label="Próximo ciclo" className="card p-5 flex flex-col gap-3.5">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Próximo ciclo</h2>
+              <Clock className="w-[18px] h-[18px] text-muted" aria-hidden="true" />
+            </div>
+            <span className="font-mono text-[36px] leading-none tracking-tight" suppressHydrationWarning>
+              {schedulerStatus?.is_running
+                ? "Rodando"
+                : schedulerStatus?.next_run_at
+                  ? clockTime(schedulerStatus.next_run_at)
+                  : "—"}
+            </span>
+            <span className="text-[13px] text-muted" suppressHydrationWarning>
+              {schedulerStatus?.last_run_at ? `Último ciclo ${timeAgo(schedulerStatus.last_run_at)}` : "Nenhum ciclo rodou ainda"}
+            </span>
+            {nextInQueue && (
+              <div className="inset p-3.5 flex flex-col gap-1">
+                <span className="text-xs text-faint">Próximo da fila</span>
+                <span className="text-ink-2 line-clamp-2">
+                  {nextInQueue.caption || nextInQueue.original_caption || `Reel de @${nextInQueue.source_username}`}
+                </span>
+              </div>
+            )}
+          </section>
+
+          <section aria-label="Últimas publicações" className="card p-5 flex flex-col gap-3.5">
+            <h2 className="section-title">Últimas publicações</h2>
+            {recentPublished.length === 0 ? (
+              <span className="text-[13px] text-muted">Nenhuma publicação entre os reels carregados.</span>
+            ) : (
+              <ul className="m-0 p-0 list-none flex flex-col gap-3.5">
+                {recentPublished.map((r) => (
+                  <li key={r.id} className="flex gap-3">
+                    <span className="font-mono text-xs text-faint pt-0.5 shrink-0" suppressHydrationWarning>
+                      {clockTime(r.published_at)}
+                    </span>
+                    <span className="text-ink-2 leading-snug min-w-0">
+                      <span className="line-clamp-2">{r.caption || r.original_caption || "Sem legenda"}</span>
+                      <span className="text-xs text-faint">@{r.source_username}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      </div>
+
+      <AddReelModal isOpen={showAddModal} onClose={() => setShowAddModal(false)} onAdded={fetchData} />
+    </AppShell>
   );
 }
