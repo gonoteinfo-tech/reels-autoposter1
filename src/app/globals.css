@@ -38,9 +38,9 @@
   --color-warn-ink: #f5c36b;
 
   /* Tipografia */
-  --font-display: var(--font-display-family), ui-sans-serif, system-ui, sans-serif;
-  --font-sans: var(--font-body-family), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-mono-family), ui-monospace, monospace;
+  --font-display: "Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
 @layer base {
