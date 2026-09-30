@@ -1,11 +1,4 @@
-import OpenAI from 'openai';
 import { GoogleGenAI } from '@google/genai';
-
-const getOpenAI = (): OpenAI | null => {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
-  return new OpenAI({ apiKey });
-};
 
 const getGemini = (): GoogleGenAI | null => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -53,61 +46,46 @@ interface CaptionProvider {
 }
 
 /**
- * Provedores configurados, em ordem de prioridade: Gemini (principal) e OpenAI (reserva).
- * Um provedor só entra na lista se a respectiva chave estiver no ambiente.
+ * Modelos Gemini com camada gratuita, em ordem de prioridade. Os limites de uso
+ * são definidos pelo projeto da chave no Google AI Studio.
  */
 function getCaptionProviders(): CaptionProvider[] {
   const providers: CaptionProvider[] = [];
 
   const gemini = getGemini();
   if (gemini) {
-    const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-    providers.push({
-      key: 'gemini',
-      name: `Gemini (${model})`,
-      generate: async (systemPrompt, userPrompt) => {
-        // Modelos Gemini 3 não aceitam temperature; o formato JSON é garantido pelo schema
-        const interaction = await gemini.interactions.create({
-          model,
-          system_instruction: systemPrompt,
-          input: userPrompt,
-          response_format: {
-            type: 'text',
-            mime_type: 'application/json',
-            schema: {
-              type: 'object',
-              properties: {
-                legenda: { type: 'string' },
-                hashtags: { type: 'array', items: { type: 'string' } },
-              },
-              required: ['legenda', 'hashtags'],
-            },
-          },
-        }, { timeout: AI_TIMEOUT_MS, maxRetries: 0 });
-        return interaction.output_text;
-      },
-    });
-  }
+    const models = new Set([
+      process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+      process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite',
+    ]);
 
-  const openai = getOpenAI();
-  if (openai) {
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    providers.push({
-      key: 'openai',
-      name: `OpenAI (${model})`,
-      generate: async (systemPrompt, userPrompt) => {
-        const response = await openai.chat.completions.create({
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.5,
-        }, { timeout: AI_TIMEOUT_MS, maxRetries: 0 });
-        return response.choices[0].message.content ?? undefined;
-      },
-    });
+    for (const model of models) {
+      providers.push({
+        key: `gemini:${model}`,
+        name: `Gemini (${model})`,
+        generate: async (systemPrompt, userPrompt) => {
+          // Modelos Gemini 3 não aceitam temperature; o formato JSON é garantido pelo schema
+          const interaction = await gemini.interactions.create({
+            model,
+            system_instruction: systemPrompt,
+            input: userPrompt,
+            response_format: {
+              type: 'text',
+              mime_type: 'application/json',
+              schema: {
+                type: 'object',
+                properties: {
+                  legenda: { type: 'string' },
+                  hashtags: { type: 'array', items: { type: 'string' } },
+                },
+                required: ['legenda', 'hashtags'],
+              },
+            },
+          }, { timeout: AI_TIMEOUT_MS, maxRetries: 0 });
+          return interaction.output_text;
+        },
+      });
+    }
   }
 
   return providers;
@@ -283,7 +261,7 @@ export async function rewriteCaption(originalCaption: string, sourceHashtags?: s
   const providers = getCaptionProviders();
   if (providers.length === 0) {
     throw new Error(
-      'Nenhuma IA configurada para reescrever a legenda. Configure GEMINI_API_KEY ou OPENAI_API_KEY; publicação bloqueada para não reutilizar a legenda original.'
+      'Nenhuma IA configurada para reescrever a legenda. Configure GEMINI_API_KEY ou GOOGLE_API_KEY; publicação bloqueada para não reutilizar a legenda original.'
     );
   }
 
