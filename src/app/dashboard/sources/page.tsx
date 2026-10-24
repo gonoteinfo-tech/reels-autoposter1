@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { getLoggedInUser } from "@/services/auth";
 import SourcesClient from "@/components/SourcesClient";
 
+export const dynamic = 'force-dynamic';
+
 export default async function SourcesPage() {
   const user = await getLoggedInUser();
 

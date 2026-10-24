@@ -4,6 +4,8 @@ import { processReel } from '@/services/pipeline';
 import { getLoggedInUser } from '@/services/auth';
 import fs from 'fs';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * POST /api/reels/reprocess
  * Reprocessa um reel com erro resetando para a etapa adequada e rodando em background.
@@ -60,16 +62,26 @@ export async function POST(request: Request) {
         }, user.id);
 
         console.log(`🔄 [Reprocessar] Reel #${reel.id} do Usuário #${user.id} redefinido para o estágio "${targetStage}" em lote.`);
-
-        // Disparar em background
-        processReel(reel.id).catch((err) => {
-          console.error(`❌ [Reprocessar] Erro em background no Reel #${reel.id}:`, err);
-        });
       }
+
+      // Executar em background de forma sequencial (1 por vez) para prevenir sobrecarga de CPU/RAM com FFmpeg
+      (async () => {
+        for (const reel of failedReels) {
+          try {
+            console.log(`🎬 [Fila Reprocessamento] Processando Reel #${reel.id} (${failedReels.indexOf(reel) + 1}/${failedReels.length})...`);
+            await processReel(reel.id);
+          } catch (err) {
+            console.error(`❌ [Fila Reprocessamento] Erro no Reel #${reel.id}:`, err);
+          }
+        }
+        console.log(`✅ [Fila Reprocessamento] Lote de ${failedReels.length} reels concluído.`);
+      })().catch((err) => {
+        console.error('❌ [Fila Reprocessamento] Erro geral na fila de reprocessamento:', err);
+      });
 
       return NextResponse.json({
         success: true,
-        message: `${failedReels.length} reels enviados para reprocessamento com sucesso.`,
+        message: `${failedReels.length} reels colocados na fila de reprocessamento sequencial com sucesso.`,
         data: { count: failedReels.length }
       });
     }

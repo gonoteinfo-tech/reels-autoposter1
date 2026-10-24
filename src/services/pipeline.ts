@@ -19,6 +19,7 @@ import {
   setSourcePendingSnapshot,
   clearSourcePendingSnapshotIf,
   isVideoFileUsedByPendingReel,
+  getPublishedTotalCount,
 } from './database';
 import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, hasCookiesConfigured } from './instagram-downloader';
 import { collectReelsDiscovery, fetchSingleReelBrightData, isBrightDataConfigured, startReelsDiscovery } from './brightdata-discoverer';
@@ -360,6 +361,20 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
       const r2Key = generateR2Key(reelId, reel!.source_username);
       const r2Url = await uploadVideo(reel!.processed_path!, r2Key);
 
+      // Limpeza de arquivos locais para liberar espaço em disco na VPS após upload seguro no R2
+      try {
+        if (reel!.local_path && fs.existsSync(reel!.local_path)) {
+          fs.unlinkSync(reel!.local_path);
+          console.log(`🧹 [Cleanup] Vídeo original local removido após upload R2: ${path.basename(reel!.local_path)}`);
+        }
+        if (reel!.processed_path && fs.existsSync(reel!.processed_path)) {
+          fs.unlinkSync(reel!.processed_path);
+          console.log(`🧹 [Cleanup] Vídeo processado local removido após upload R2: ${path.basename(reel!.processed_path)}`);
+        }
+      } catch (cleanupErr) {
+        console.warn(`⚠️ [Cleanup] Erro ao limpar arquivos locais de Reel #${reelId}:`, cleanupErr);
+      }
+
       updateReel(reelId, {
         r2_url: r2Url,
         stage: 'uploaded',
@@ -384,7 +399,6 @@ export async function processReel(reelId: number): Promise<PipelineResult[]> {
     // Verificar limite do plano gratuito
     const user = getUserById(reel.user_id);
     if (user && user.plan === 'free') {
-      const { getPublishedTotalCount } = require('./database');
       const publishedCount = getPublishedTotalCount(reel.user_id);
       if (publishedCount >= 1) {
         const errorMsg = "Limite do plano gratuito atingido (máximo 1 publicação). Por favor, atualize seu plano.";

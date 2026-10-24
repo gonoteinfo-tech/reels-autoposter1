@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 import { getReelById } from '@/services/database';
+import { getLoggedInUser } from '@/services/auth';
 import fs from 'fs';
 import { Readable } from 'stream';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/videos
- * Stream de vídeo local para permitir a visualização no dashboard.
+ * Stream de vídeo local ou redirecionamento seguro para R2 para permitir a visualização no dashboard.
  * Suporta Range Requests para permitir seek/scrubbing nos players HTML5.
  *
  * Query params:
@@ -14,6 +17,14 @@ import { Readable } from 'stream';
  */
 export async function GET(request: Request) {
   try {
+    const user = await getLoggedInUser();
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Não autorizado. Faça login primeiro.' },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
     const type = searchParams.get('type');
@@ -25,10 +36,11 @@ export async function GET(request: Request) {
       );
     }
 
-    const reel = getReelById(Number(id));
+    // Buscar apenas se o reel pertencer ao usuário autenticado (proteção contra IDOR)
+    const reel = getReelById(Number(id), user.id);
     if (!reel) {
       return NextResponse.json(
-        { success: false, error: 'Reel não encontrado no banco de dados' },
+        { success: false, error: 'Reel não encontrado ou não pertence a você' },
         { status: 404 }
       );
     }
@@ -44,14 +56,19 @@ export async function GET(request: Request) {
       filePath = reel.processed_path || reel.local_path || '';
     }
 
-    if (!filePath || !fs.existsSync(filePath)) {
+    // Se o arquivo local não existir, mas o vídeo já estiver no Cloudflare R2, redirecionar diretamente
+    if ((!filePath || !fs.existsSync(/*turbopackIgnore: true*/ filePath)) && reel.r2_url) {
+      return NextResponse.redirect(reel.r2_url, 307);
+    }
+
+    if (!filePath || !fs.existsSync(/*turbopackIgnore: true*/ filePath)) {
       return NextResponse.json(
         { success: false, error: 'Arquivo de vídeo não encontrado no servidor' },
         { status: 404 }
       );
     }
 
-    const stat = fs.statSync(filePath);
+    const stat = fs.statSync(/*turbopackIgnore: true*/ filePath);
     const fileSize = stat.size;
     const range = request.headers.get('range');
 
@@ -69,7 +86,7 @@ export async function GET(request: Request) {
       }
 
       const chunkSize = end - start + 1;
-      const fileStream = fs.createReadStream(filePath, { start, end });
+      const fileStream = fs.createReadStream(/*turbopackIgnore: true*/ filePath, { start, end });
       const webStream = Readable.toWeb(fileStream);
 
       return new NextResponse(webStream as any, {
@@ -83,7 +100,7 @@ export async function GET(request: Request) {
       });
     } else {
       // Processar stream completo (HTTP 200)
-      const fileStream = fs.createReadStream(filePath);
+      const fileStream = fs.createReadStream(/*turbopackIgnore: true*/ filePath);
       const webStream = Readable.toWeb(fileStream);
 
       return new NextResponse(webStream as any, {
