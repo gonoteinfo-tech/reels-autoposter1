@@ -1,11 +1,13 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 import {
   initDatabase,
   getAppSettings,
   updateSettings,
-} from '@/services/database';
-import { getLoggedInUser } from '@/services/auth';
-import type { AppSettings, ApiResponse } from '@/types';
+} from "@/services/database";
+import { getLoggedInUser } from "@/services/auth";
+import type { AppSettings, ApiResponse } from "@/types";
+import cron from "node-cron";
+import { getQueue } from "@/services/pipeline";
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -13,27 +15,36 @@ function ensureDb() {
 }
 
 /** Chaves válidas de configuração e seus tipos esperados */
-const VALID_SETTING_KEYS: Record<keyof AppSettings, 'string' | 'number' | 'boolean'> = {
-  logo_position: 'string',
-  logo_scale: 'number',
-  cron_schedule: 'string',
-  max_reels_per_run: 'number',
-  discovery_limit: 'number',
-  discovery_interval_minutes: 'number',
-  publish_interval_minutes: 'number',
-  auto_publish: 'boolean',
-  custom_caption_template: 'string',
-  instagram_enabled: 'boolean',
-  facebook_enabled: 'boolean',
-  facebook_page_access_token: 'string',
-  facebook_page_id: 'string',
-  instagram_business_account_id: 'string',
-  facebook_page_name: 'string',
-  instagram_username: 'string',
+const VALID_SETTING_KEYS: Record<
+  keyof AppSettings,
+  "string" | "number" | "boolean"
+> = {
+  logo_position: "string",
+  logo_scale: "number",
+  cron_schedule: "string",
+  max_reels_per_run: "number",
+  discovery_limit: "number",
+  discovery_interval_minutes: "number",
+  publish_interval_minutes: "number",
+  auto_publish: "boolean",
+  custom_caption_template: "string",
+  instagram_enabled: "boolean",
+  facebook_enabled: "boolean",
+  facebook_page_access_token: "string",
+  facebook_page_id: "string",
+  instagram_business_account_id: "string",
+  facebook_page_name: "string",
+  instagram_username: "string",
 };
 
 /** Posições válidas para o logo */
-const VALID_LOGO_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'];
+const VALID_LOGO_POSITIONS = [
+  "top-left",
+  "top-right",
+  "bottom-left",
+  "bottom-right",
+  "center",
+];
 
 /**
  * GET /api/settings
@@ -45,8 +56,8 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
     const user = await getLoggedInUser();
     if (!user) {
       return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
+        { success: false, error: "Não autorizado. Faça login primeiro." },
+        { status: 401 },
       );
     }
 
@@ -54,13 +65,17 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
 
     return NextResponse.json({
       success: true,
-      data: settings,
+      data: { ...settings, facebook_page_access_token: "" },
     });
   } catch (error) {
-    console.error('❌ Erro ao buscar configurações:', error);
+    console.error("❌ Erro ao buscar configurações:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro interno do servidor",
+      },
+      { status: 500 },
     );
   }
 }
@@ -70,23 +85,28 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
  * Atualiza configurações do usuário logado.
  * Aceita atualizações parciais (Partial<AppSettings>).
  */
-export async function PUT(request: Request): Promise<NextResponse<ApiResponse>> {
+export async function PUT(
+  request: Request,
+): Promise<NextResponse<ApiResponse>> {
   try {
     ensureDb();
     const user = await getLoggedInUser();
     if (!user) {
       return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
+        { success: false, error: "Não autorizado. Faça login primeiro." },
+        { status: 401 },
       );
     }
 
     const body = await request.json();
 
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
       return NextResponse.json(
-        { success: false, error: 'O corpo da requisição deve ser um objeto JSON' },
-        { status: 400 }
+        {
+          success: false,
+          error: "O corpo da requisição deve ser um objeto JSON",
+        },
+        { status: 400 },
       );
     }
 
@@ -105,57 +125,70 @@ export async function PUT(request: Request): Promise<NextResponse<ApiResponse>> 
 
       // Validar tipo
       if (typeof value !== expectedType) {
-        errors.push(`"${key}" deve ser do tipo ${expectedType}, recebido: ${typeof value}`);
+        errors.push(
+          `"${key}" deve ser do tipo ${expectedType}, recebido: ${typeof value}`,
+        );
         continue;
       }
 
       // Validações específicas por campo
       switch (settingKey) {
-        case 'logo_position':
+        case "facebook_page_access_token":
+          if (value === "" && body.facebook_page_id) continue;
+          break;
+        case "logo_position":
           if (!VALID_LOGO_POSITIONS.includes(value as string)) {
             errors.push(
-              `"logo_position" deve ser um dos valores: ${VALID_LOGO_POSITIONS.join(', ')}`
+              `"logo_position" deve ser um dos valores: ${VALID_LOGO_POSITIONS.join(", ")}`,
             );
             continue;
           }
           break;
 
-        case 'logo_scale':
+        case "logo_scale":
           if ((value as number) < 10 || (value as number) > 500) {
             errors.push('"logo_scale" deve estar entre 10 e 500');
             continue;
           }
           break;
 
-        case 'max_reels_per_run':
+        case "max_reels_per_run":
           if ((value as number) < 1 || (value as number) > 50) {
             errors.push('"max_reels_per_run" deve estar entre 1 e 50');
             continue;
           }
           break;
 
-        case 'discovery_limit':
+        case "discovery_limit":
           if ((value as number) < 1 || (value as number) > 50) {
             errors.push('"discovery_limit" deve estar entre 1 e 50');
             continue;
           }
           break;
 
-        case 'discovery_interval_minutes':
+        case "discovery_interval_minutes":
           if ((value as number) < 5 || (value as number) > 1440) {
-            errors.push('"discovery_interval_minutes" deve estar entre 5 e 1440 (24h)');
+            errors.push(
+              '"discovery_interval_minutes" deve estar entre 5 e 1440 (24h)',
+            );
             continue;
           }
           break;
 
-        case 'publish_interval_minutes':
+        case "publish_interval_minutes":
           if ((value as number) < 0 || (value as number) > 1440) {
-            errors.push('"publish_interval_minutes" deve estar entre 0 e 1440 (24h)');
+            errors.push(
+              '"publish_interval_minutes" deve estar entre 0 e 1440 (24h)',
+            );
             continue;
           }
           break;
 
-        case 'cron_schedule':
+        case "cron_schedule":
+          if (!cron.validate(value as string)) {
+            errors.push("Expressão cron inválida.");
+            continue;
+          }
           // Validação básica do formato cron (5 campos)
           const cronParts = (value as string).trim().split(/\s+/);
           if (cronParts.length !== 5) {
@@ -171,33 +204,41 @@ export async function PUT(request: Request): Promise<NextResponse<ApiResponse>> 
 
     if (errors.length > 0) {
       return NextResponse.json(
-        { success: false, error: `Erros de validação: ${errors.join('; ')}` },
-        { status: 400 }
+        { success: false, error: `Erros de validação: ${errors.join("; ")}` },
+        { status: 400 },
       );
     }
 
     if (Object.keys(validatedSettings).length === 0) {
       return NextResponse.json(
-        { success: false, error: 'Nenhuma configuração válida fornecida para atualizar' },
-        { status: 400 }
+        {
+          success: false,
+          error: "Nenhuma configuração válida fornecida para atualizar",
+        },
+        { status: 400 },
       );
     }
 
     // Atualizar no banco
     updateSettings(user.id, validatedSettings);
+    getQueue().unblock(user.id);
 
     // Retornar as configurações atualizadas
     const updatedSettings = getAppSettings(user.id);
 
     return NextResponse.json({
       success: true,
-      data: updatedSettings,
+      data: { ...updatedSettings, facebook_page_access_token: "" },
     });
   } catch (error) {
-    console.error('❌ Erro ao atualizar configurações:', error);
+    console.error("❌ Erro ao atualizar configurações:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro interno do servidor",
+      },
+      { status: 500 },
     );
   }
 }

@@ -1,279 +1,137 @@
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-import ffprobeInstaller from '@ffprobe-installer/ffprobe';
-import path from 'path';
-import fs from 'fs';
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { runTool, FFMPEG, FFPROBE } from "./media";
 
-// Configurar caminhos dos binários FFmpeg
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
-ffmpeg.setFfprobePath(ffprobeInstaller.path);
+export type LogoPosition =
+  "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
+const positions: Record<LogoPosition, string> = {
+  "top-left": "30:30",
+  "top-right": "main_w-overlay_w-30:30",
+  "bottom-left": "30:main_h-overlay_h-30",
+  "bottom-right": "main_w-overlay_w-30:main_h-overlay_h-30",
+  center: "(main_w-overlay_w)/2:(main_h-overlay_h)/2",
+};
 
-/** Posições suportadas para overlay da logo */
-export type LogoPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
+export async function getVideoInfo(filePath: string) {
+  const data = JSON.parse(
+    await runTool(
+      FFPROBE,
+      ["-v", "error", "-show_streams", "-show_format", "-of", "json", filePath],
+      { timeout: 30_000 },
+    ),
+  );
+  const video = data.streams?.find(
+    (s: { codec_type: string }) => s.codec_type === "video",
+  );
+  if (!video) throw new Error("Nenhum stream de vídeo encontrado.");
+  return {
+    duration: Number(data.format.duration) || 0,
+    width: Number(video.width) || 0,
+    height: Number(video.height) || 0,
+    codec: String(video.codec_name),
+    bitrate: Number(data.format.bit_rate) || 0,
+  };
+}
 
-/**
- * Calcula a expressão de overlay do FFmpeg para a posição desejada.
- * @param position Posição da logo no vídeo
- * @param padding Padding em pixels das bordas
- * @returns Expressão de overlay para o FFmpeg
- */
-function getOverlayPosition(position: LogoPosition, padding: number = 30): string {
-  switch (position) {
-    case 'top-left':
-      return `${padding}:${padding}`;
-    case 'top-right':
-      return `main_w-overlay_w-${padding}:${padding}`;
-    case 'bottom-left':
-      return `${padding}:main_h-overlay_h-${padding}`;
-    case 'bottom-right':
-      return `main_w-overlay_w-${padding}:main_h-overlay_h-${padding}`;
-    case 'center':
-      return '(main_w-overlay_w)/2:(main_h-overlay_h)/2';
-    default:
-      return `main_w-overlay_w-${padding}:main_h-overlay_h-${padding}`;
+export async function normalizeVideo(
+  input: string,
+  output: string,
+  logo?: string | null,
+  position = "bottom-right",
+  scale = 80,
+  signal?: AbortSignal,
+): Promise<string> {
+  const info = await getVideoInfo(input);
+  if (
+    info.duration <= 0 ||
+    info.duration > (Number(process.env.MAX_VIDEO_SECONDS) || 900)
+  )
+    throw new Error("Duração de vídeo inválida ou excedida.");
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  const temp = output + "." + randomUUID() + ".tmp.mp4";
+  const args = ["-nostdin", "-y", "-i", input];
+  const base =
+    "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30";
+  if (logo) {
+    if (!Number.isFinite(scale) || scale < 10 || scale > 500)
+      throw new Error("Escala de logo inválida.");
+    args.push(
+      "-i",
+      logo,
+      "-filter_complex",
+      `[0:v]${base}[v];[1:v]scale=${scale}:-1[l];[v][l]overlay=${positions[position as LogoPosition] || positions["bottom-right"]}[out]`,
+      "-map",
+      "[out]",
+    );
+  } else args.push("-vf", base, "-map", "0:v:0");
+  args.push(
+    "-map",
+    "0:a?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "23",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "48000",
+    "-threads",
+    String(Number(process.env.FFMPEG_THREADS) || 2),
+    "-movflags",
+    "+faststart",
+    temp,
+  );
+  try {
+    await runTool(FFMPEG, args, {
+      timeout: Number(process.env.FFMPEG_TIMEOUT_MS) || 600_000,
+      signal,
+    });
+    await getVideoInfo(temp);
+    fs.renameSync(temp, output);
+    return output;
+  } finally {
+    fs.rmSync(temp, { force: true });
   }
 }
-
-/**
- * Obtém informações de um arquivo de vídeo via ffprobe.
- * @param filePath Caminho do arquivo de vídeo
- * @returns Metadados do vídeo (duração, dimensões, codecs)
- */
-export function getVideoInfo(
-  filePath: string
-): Promise<{
-  duration: number;
-  width: number;
-  height: number;
-  codec: string;
-  bitrate: number;
-}> {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        reject(new Error(`❌ Falha ao obter info do vídeo: ${err.message}`));
-        return;
-      }
-
-      const videoStream = metadata.streams.find((s) => s.codec_type === 'video');
-      if (!videoStream) {
-        reject(new Error('❌ Nenhum stream de vídeo encontrado'));
-        return;
-      }
-
-      resolve({
-        duration: metadata.format.duration || 0,
-        width: videoStream.width || 0,
-        height: videoStream.height || 0,
-        codec: videoStream.codec_name || 'unknown',
-        bitrate: Number(metadata.format.bit_rate) || 0,
-      });
-    });
-  });
-}
-
-/**
- * Adiciona uma logo/marca d'água a um vídeo.
- * O vídeo é redimensionado para 1080x1920 (9:16) e codificado com H.264 + AAC.
- * A logo é escalada para a largura especificada mantendo proporção.
- *
- * @param inputPath Caminho do vídeo original
- * @param logoPath Caminho do arquivo de logo (PNG com transparência recomendado)
- * @param outputPath Caminho de saída do vídeo processado
- * @param position Posição da logo no vídeo
- * @param scale Largura da logo em pixels (altura auto-calculada)
- * @returns Caminho do vídeo processado
- */
 export function addLogoToVideo(
-  inputPath: string,
-  logoPath: string,
-  outputPath: string,
-  position: string = 'bottom-right',
-  scale: number = 80
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    console.log(`🎬 Processando vídeo: ${path.basename(inputPath)}`);
-    console.log(`🎬 Logo: ${path.basename(logoPath)} | Posição: ${position} | Escala: ${scale}px`);
-
-    // Validar arquivos de entrada
-    if (!fs.existsSync(inputPath)) {
-      reject(new Error(`❌ Vídeo não encontrado: ${inputPath}`));
-      return;
-    }
-
-    if (!fs.existsSync(logoPath)) {
-      reject(new Error(`❌ Logo não encontrada: ${logoPath}`));
-      return;
-    }
-
-    // Garantir que o diretório de saída existe
-    const outputDir = path.dirname(outputPath);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    const overlayPos = getOverlayPosition(position as LogoPosition);
-
-    // Construir o filtro complexo:
-    // 1. Escalar vídeo para 1080x1920 com padding (letterbox/pillarbox)
-    // 2. Escalar logo para largura desejada
-    // 3. Fazer overlay da logo no vídeo
-    const filterComplex = [
-      // Escalar o vídeo para caber em 1080x1920 mantendo aspect ratio, depois adicionar padding preto
-      `[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[video]`,
-      // Escalar a logo para a largura especificada, mantendo proporção
-      `[1:v]scale=${scale}:-1[logo]`,
-      // Overlay da logo no vídeo
-      `[video][logo]overlay=${overlayPos}[out]`,
-    ].join(';');
-
-    const startTime = Date.now();
-
-    ffmpeg()
-      .input(inputPath)
-      .input(logoPath)
-      .complexFilter(filterComplex)
-      .outputOptions([
-        '-map', '[out]',       // Usar output do filtro de vídeo
-        '-map', '0:a?',        // Copiar áudio do input original (se existir)
-        '-c:v', 'libx264',    // Codec de vídeo H.264
-        '-preset', 'superfast', // Preset rápido de qualidade/velocidade
-        '-crf', '23',          // Qualidade (menor = melhor, 18-28 range)
-        '-c:a', 'aac',        // Codec de áudio AAC
-        '-b:a', '128k',       // Bitrate do áudio
-        '-ar', '44100',       // Sample rate
-        '-movflags', '+faststart', // Otimizar para streaming web
-        '-y',                  // Sobrescrever arquivo de saída
-      ])
-      .output(outputPath)
-      .on('start', (commandLine) => {
-        console.log(`🎬 FFmpeg comando: ${commandLine.substring(0, 200)}...`);
-      })
-      .on('progress', (progress) => {
-        if (progress.percent) {
-          const percent = Math.round(progress.percent);
-          if (percent % 25 === 0) {
-            console.log(`🎬 Progresso: ${percent}%`);
-          }
-        }
-      })
-      .on('end', () => {
-        const durationMs = Date.now() - startTime;
-        const stats = fs.statSync(outputPath);
-        console.log(
-          `🎬 Processamento concluído em ${(durationMs / 1000).toFixed(1)}s ` +
-            `(${(stats.size / 1024 / 1024).toFixed(2)} MB)`
-        );
-        resolve(outputPath);
-      })
-      .on('error', (err) => {
-        console.error(`❌ Erro no FFmpeg: ${err.message}`);
-        // Limpar arquivo parcial se existir
-        if (fs.existsSync(outputPath)) {
-          try {
-            fs.unlinkSync(outputPath);
-          } catch {
-            // Ignorar erro de limpeza
-          }
-        }
-        reject(new Error(`❌ Falha no processamento de vídeo: ${err.message}`));
-      })
-      .run();
-  });
+  input: string,
+  logo: string,
+  output: string,
+  position = "bottom-right",
+  scale = 80,
+) {
+  return normalizeVideo(input, output, logo, position, scale);
 }
-
-/**
- * Processa um vídeo sem adicionar logo, apenas redimensionando para 9:16.
- * Útil quando não há logo configurada.
- *
- * @param inputPath Caminho do vídeo original
- * @param outputPath Caminho de saída
- * @returns Caminho do vídeo processado
- */
-export function resizeVideo(inputPath: string, outputPath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    console.log(`🎬 Redimensionando vídeo: ${path.basename(inputPath)}`);
-
-    if (!fs.existsSync(inputPath)) {
-      reject(new Error(`❌ Vídeo não encontrado: ${inputPath}`));
-      return;
-    }
-
-    const outputDir = path.dirname(outputPath);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    const startTime = Date.now();
-
-    ffmpeg()
-      .input(inputPath)
-      .videoFilters([
-        'scale=1080:1920:force_original_aspect_ratio=decrease',
-        'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black',
-      ])
-      .outputOptions([
-        '-c:v', 'libx264',
-        '-preset', 'superfast',
-        '-crf', '23',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-movflags', '+faststart',
-        '-y',
-      ])
-      .output(outputPath)
-      .on('end', () => {
-        const durationMs = Date.now() - startTime;
-        console.log(`🎬 Redimensionamento concluído em ${(durationMs / 1000).toFixed(1)}s`);
-        resolve(outputPath);
-      })
-      .on('error', (err) => {
-        if (fs.existsSync(outputPath)) {
-          try {
-            fs.unlinkSync(outputPath);
-          } catch {
-            // Ignorar
-          }
-        }
-        reject(new Error(`❌ Falha ao redimensionar vídeo: ${err.message}`));
-      })
-      .run();
-  });
+export function resizeVideo(input: string, output: string) {
+  return normalizeVideo(input, output);
 }
-
-/**
- * Gera uma thumbnail de um vídeo.
- * @param inputPath Caminho do vídeo
- * @param outputPath Caminho da imagem de saída
- * @param timestamp Tempo do frame em segundos (padrão: 1s)
- * @returns Caminho da thumbnail gerada
- */
-export function generateThumbnail(
-  inputPath: string,
-  outputPath: string,
-  timestamp: number = 1
+export async function generateThumbnail(
+  input: string,
+  output: string,
+  timestamp = 1,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const outputDir = path.dirname(outputPath);
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    ffmpeg()
-      .input(inputPath)
-      .screenshots({
-        timestamps: [timestamp],
-        filename: path.basename(outputPath),
-        folder: outputDir,
-        size: '1080x1920',
-      })
-      .on('end', () => {
-        console.log(`🎬 Thumbnail gerada: ${outputPath}`);
-        resolve(outputPath);
-      })
-      .on('error', (err) => {
-        reject(new Error(`❌ Falha ao gerar thumbnail: ${err.message}`));
-      });
-  });
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  await runTool(
+    FFMPEG,
+    [
+      "-nostdin",
+      "-y",
+      "-ss",
+      String(timestamp),
+      "-i",
+      input,
+      "-frames:v",
+      "1",
+      output,
+    ],
+    { timeout: 30_000 },
+  );
+  return output;
 }

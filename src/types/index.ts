@@ -21,7 +21,7 @@ export interface SourceProfile {
   id: number;
   user_id: number;
   username: string;
-  platform?: 'instagram' | 'tiktok' | 'facebook' | 'youtube';
+  platform?: "instagram" | "tiktok" | "facebook" | "youtube";
   display_name: string;
   profile_pic_url: string;
   is_active: boolean;
@@ -31,20 +31,22 @@ export interface SourceProfile {
   /** Coleta da Bright Data disparada e ainda não recolhida (descoberta assíncrona) */
   pending_snapshot_id?: string | null;
   pending_snapshot_at?: string | null;
+  pipeline_status?: string;
+  pipeline_error?: string | null;
 }
 
 /** Estágio do pipeline de processamento */
 export type ReelStage =
-  | 'discovered'    // Reel encontrado, não baixado
-  | 'downloading'   // Download em andamento
-  | 'downloaded'    // Download concluído
-  | 'processing'    // FFmpeg processando (adicionando logo)
-  | 'processed'     // Vídeo com logo pronto
-  | 'uploading'     // Upload para R2
-  | 'uploaded'      // URL pública gerada
-  | 'publishing'    // Publicando no Instagram/Facebook
-  | 'published'     // Publicação concluída
-  | 'error';        // Erro em alguma etapa
+  | "discovered" // Reel encontrado, não baixado
+  | "downloading" // Download em andamento
+  | "downloaded" // Download concluído
+  | "processing" // FFmpeg processando (adicionando logo)
+  | "processed" // Vídeo com logo pronto
+  | "uploading" // Upload para R2
+  | "uploaded" // URL pública gerada
+  | "publishing" // Publicando no Instagram/Facebook
+  | "published" // Publicação concluída
+  | "error"; // Erro em alguma etapa
 
 /** Um Reel coletado e rastreado no sistema */
 export interface Reel {
@@ -74,7 +76,8 @@ export interface Reel {
 
 /** Configurações globais do sistema */
 export interface AppSettings {
-  logo_position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
+  logo_position:
+    "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
   logo_scale: number;
   cron_schedule: string;
   /** Máximo de tentativas de processamento por execução (proteção contra reels quebrados) */
@@ -98,6 +101,21 @@ export interface AppSettings {
 
 /** Status do scheduler */
 export interface SchedulerStatus {
+  worker_online?: boolean;
+  paused?: boolean;
+  heartbeat_at?: string | null;
+  schedule_error?: string | null;
+  jobs?: {
+    id: string;
+    kind: string;
+    ref_id: number;
+    status: string;
+    attempts: number;
+    error_message: string | null;
+    available_at: number;
+    updated_at: number;
+    target: string | null;
+  }[];
   is_running: boolean;
   scheduler_active: boolean;
   last_run_at: string | null;

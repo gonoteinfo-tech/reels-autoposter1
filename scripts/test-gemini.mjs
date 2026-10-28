@@ -42,7 +42,7 @@ if (!apiKey) {
   process.exit(1);
 }
 
-console.log('✅ GEMINI_API_KEY encontrada:', apiKey.substring(0, 8) + '...');
+console.log('✅ GEMINI_API_KEY configurada.');
 console.log('   Modelo:', model);
 console.log('');
 

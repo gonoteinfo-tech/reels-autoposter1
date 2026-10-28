@@ -1,89 +1,108 @@
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import axios from 'axios';
-import crypto from 'crypto';
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import axios from "axios";
+import crypto from "crypto";
 import {
   getUserByEmail,
   updateUserGoogleId,
   getUserById,
   createUser,
   createSession,
-  ensureProIfListed
-} from '@/services/database';
+  ensureProIfListed,
+} from "@/services/database";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const code = searchParams.get('code');
-  const error = searchParams.get('error');
-  const errorDescription = searchParams.get('error_description');
-  const state = searchParams.get('state');
+  const code = searchParams.get("code");
+  const error = searchParams.get("error");
+  const errorDescription = searchParams.get("error_description");
+  const state = searchParams.get("state");
 
   if (error || !code) {
-    console.error('❌ Erro no retorno do Google OAuth:', error, errorDescription);
-    const details = errorDescription || error || 'Código de autorização ausente';
-    return NextResponse.redirect(new URL(`/?error=oauth_failed&details=${encodeURIComponent(details)}`, request.url));
+    console.error(
+      "❌ Erro no retorno do Google OAuth:",
+      error,
+      errorDescription,
+    );
+    const details =
+      errorDescription || error || "Código de autorização ausente";
+    return NextResponse.redirect(
+      new URL(
+        `/?error=oauth_failed&details=${encodeURIComponent(details)}`,
+        request.url,
+      ),
+    );
   }
 
   // Validar o token "state" anti-CSRF gravado em /api/auth/google
   const cookieStore = await cookies();
-  const expectedState = cookieStore.get('oauth_state')?.value;
-  cookieStore.delete('oauth_state'); // uso único
+  const expectedState = cookieStore.get("oauth_state")?.value;
+  cookieStore.delete("oauth_state"); // uso único
   if (!expectedState || !state || state !== expectedState) {
-    console.error('❌ State OAuth inválido ou ausente (possível CSRF)');
-    return NextResponse.redirect(new URL('/?error=invalid_state', request.url));
+    console.error("❌ State OAuth inválido ou ausente (possível CSRF)");
+    return NextResponse.redirect(new URL("/?error=invalid_state", request.url));
   }
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    console.error('❌ Credenciais do Google OAuth ausentes no servidor');
+    console.error("❌ Credenciais do Google OAuth ausentes no servidor");
     return NextResponse.redirect(
-      new URL('/?error=server_configuration&details=GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET nao configurado no .env', request.url)
+      new URL(
+        "/?error=server_configuration&details=GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET nao configurado no .env",
+        request.url,
+      ),
     );
   }
 
   // Detectar protocolo
-  const host = request.headers.get('host') || 'localhost:3000';
-  let proto = request.headers.get('x-forwarded-proto') || (request.url.startsWith('https:') ? 'https' : '');
+  const host = request.headers.get("host") || "localhost:3000";
+  let proto =
+    request.headers.get("x-forwarded-proto") ||
+    (request.url.startsWith("https:") ? "https" : "");
   if (!proto) {
-    const isLocal = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('192.168.') || host.startsWith('10.');
-    proto = isLocal ? 'http' : 'https';
+    const isLocal =
+      host.includes("localhost") ||
+      host.includes("127.0.0.1") ||
+      host.startsWith("192.168.") ||
+      host.startsWith("10.");
+    proto = isLocal ? "http" : "https";
   }
-  const isSecure = proto === 'https';
+  const isSecure = proto === "https";
 
   try {
     const appUrl = process.env.APP_URL;
     let redirectUri;
     if (appUrl) {
-      redirectUri = `${appUrl.replace(/\/$/, '')}/api/auth/google/callback`;
+      redirectUri = `${appUrl.replace(/\/$/, "")}/api/auth/google/callback`;
     } else {
       redirectUri = `${proto}://${host}/api/auth/google/callback`;
     }
 
     // 1. Trocar código por tokens
-    const response = await axios.post('https://oauth2.googleapis.com/token', {
+    const response = await axios.post("https://oauth2.googleapis.com/token", {
       code,
       client_id: clientId,
       client_secret: clientSecret,
       redirect_uri: redirectUri,
-      grant_type: 'authorization_code'
+      grant_type: "authorization_code",
     });
 
     const { id_token } = response.data;
     if (!id_token) {
-      throw new Error('id_token não foi retornado pelo Google');
+      throw new Error("id_token não foi retornado pelo Google");
     }
 
     // 2. Decodificar JWT do id_token sem verificação criptográfica externa
-    const payloadPart = id_token.split('.')[1];
+    const payloadPart = id_token.split(".")[1];
     if (!payloadPart) {
-      throw new Error('id_token JWT inválido');
+      throw new Error("id_token JWT inválido");
     }
 
-    const payloadJson = Buffer.from(payloadPart, 'base64').toString('utf8');
+    const payloadJson = Buffer.from(payloadPart, "base64").toString("utf8");
     const googleProfile = JSON.parse(payloadJson) as {
       email: string;
       name: string;
@@ -92,7 +111,7 @@ export async function GET(request: Request) {
     };
 
     if (!googleProfile.email) {
-      throw new Error('E-mail não retornado pelo escopo do Google');
+      throw new Error("E-mail não retornado pelo escopo do Google");
     }
 
     // 3. Obter ou Criar Usuário
@@ -110,7 +129,7 @@ export async function GET(request: Request) {
         email: googleProfile.email,
         name: googleProfile.name,
         picture: googleProfile.picture || null,
-        google_id: googleProfile.sub
+        google_id: googleProfile.sub,
       });
     }
 
@@ -119,30 +138,34 @@ export async function GET(request: Request) {
     user = getUserById(user.id)!;
 
     // 4. Criar Sessão
-    const sessionId = crypto.randomBytes(32).toString('hex');
+    const sessionId = crypto.randomBytes(32).toString("hex");
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7); // Expira em 7 dias
 
     createSession(sessionId, user.id, expiresAt);
 
     // 5. Configurar Cookie
-    cookieStore.set('session', sessionId, {
+    cookieStore.set("session", sessionId, {
       httpOnly: true,
       secure: isSecure,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7 // 7 dias
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7, // 7 dias
     });
 
-    console.log(`🔑 Login efetuado com sucesso para: ${user.email} (ID: ${user.id})`);
+    console.log(
+      `🔑 Login efetuado com sucesso para: ${user.email} (ID: ${user.id})`,
+    );
 
     // Redirecionar para o painel
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  } catch (err: any) {
-    console.error('❌ Falha ao processar callback de autenticação:', err.response?.data || err.message || err);
-    const errorDetails = err.response?.data?.error_description || err.response?.data?.error || err.message || 'Erro desconhecido no processamento do token';
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  } catch (err: unknown) {
+    console.error(
+      "Falha no callback Google:",
+      err instanceof Error ? err.name : "unknown",
+    );
     return NextResponse.redirect(
-      new URL(`/?error=callback_error&details=${encodeURIComponent(errorDetails)}`, request.url)
+      new URL("/?error=callback_error", request.url),
     );
   }
 }

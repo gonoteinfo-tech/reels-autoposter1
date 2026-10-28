@@ -1,23 +1,15 @@
 import type { NextConfig } from "next";
-import path from "path";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: [
-    'better-sqlite3',
-    'fluent-ffmpeg',
-    '@ffmpeg-installer/ffmpeg',
-    '@ffprobe-installer/ffprobe'
-  ],
+  serverExternalPackages: ["better-sqlite3"],
   turbopack: {
     root: process.cwd(),
   },
-  webpack: (config, { dev, isServer }) => {
+  webpack: (config, { dev }) => {
     if (dev) {
       config.watchOptions = {
         ...config.watchOptions,
-        ignored: [
-          '**/data/**',
-        ],
+        ignored: ["**/data/**"],
       };
     }
     return config;

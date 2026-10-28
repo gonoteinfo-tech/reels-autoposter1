@@ -1,20 +1,26 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { testBrightDataConnection, isBrightDataConfigured } from '@/services/brightdata-discoverer';
-import { getLoggedInUser } from '@/services/auth';
+import { NextResponse } from "next/server";
+import {
+  testBrightDataConnection,
+  isBrightDataConfigured,
+} from "@/services/brightdata-discoverer";
+import { getLoggedInUser } from "@/services/auth";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 /** GET /api/brightdata/test — testa a conexão com a Bright Data */
-export async function GET(_request: NextRequest) {
+export async function GET() {
   const user = await getLoggedInUser();
   if (!user) {
-    return NextResponse.json({ success: false, error: 'Não autenticado' }, { status: 401 });
+    return NextResponse.json(
+      { success: false, error: "Não autenticado" },
+      { status: 401 },
+    );
   }
 
   if (!isBrightDataConfigured()) {
     return NextResponse.json({
       success: false,
-      error: 'BRIGHTDATA_API_TOKEN não configurado no ambiente do servidor',
+      error: "BRIGHTDATA_API_TOKEN não configurado no ambiente do servidor",
       configured: false,
     });
   }

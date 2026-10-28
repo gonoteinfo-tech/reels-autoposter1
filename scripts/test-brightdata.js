@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports -- Standalone CommonJS CLI. */
 /**
  * Script de diagnóstico da integração Bright Data
  * Execute na VPS: node scripts/test-brightdata.js [url-do-reel]

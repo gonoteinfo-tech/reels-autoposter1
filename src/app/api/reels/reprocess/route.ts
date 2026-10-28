@@ -1,135 +1,40 @@
-import { NextResponse } from 'next/server';
-import { getReelById, updateReel } from '@/services/database';
-import { processReel } from '@/services/pipeline';
-import { getLoggedInUser } from '@/services/auth';
-import fs from 'fs';
-
-export const dynamic = 'force-dynamic';
-
-/**
- * POST /api/reels/reprocess
- * Reprocessa um reel com erro resetando para a etapa adequada e rodando em background.
- */
+import { NextResponse } from "next/server";
+import { getLoggedInUser } from "@/services/auth";
+import { getReelsByStage } from "@/services/database";
+import { enqueueReel } from "@/services/pipeline";
+import { safeError } from "@/services/jobs";
+export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
-  try {
-    const user = await getLoggedInUser();
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
-    const { reelId, allFailed } = body as { reelId?: number; allFailed?: boolean };
-
-    if (!reelId && !allFailed) {
-      return NextResponse.json(
-        { success: false, error: 'O campo "reelId" ou "allFailed" é obrigatório' },
-        { status: 400 }
-      );
-    }
-
-    if (allFailed) {
-      const { getReelsByStage } = await import('@/services/database');
-      // Buscar apenas os reels com erro do próprio usuário
-      const failedReels = getReelsByStage(user.id, 'error');
-      
-      if (failedReels.length === 0) {
-        return NextResponse.json({
-          success: true,
-          message: 'Nenhum reel com erro para reprocessar.',
-          data: { count: 0 }
-        });
-      }
-
-      console.log(`🔄 [Reprocessar Todos] Encontrados ${failedReels.length} reels com erro para o Usuário #${user.id}. Redefinindo estágios...`);
-
-      for (const reel of failedReels) {
-        let targetStage: 'discovered' | 'downloaded' | 'processed' | 'uploaded' = 'discovered';
-        
-        if (reel.r2_url) {
-          targetStage = 'uploaded';
-        } else if (reel.processed_path && fs.existsSync(reel.processed_path)) {
-          targetStage = 'processed';
-        } else if (reel.local_path && fs.existsSync(reel.local_path)) {
-          targetStage = 'downloaded';
-        }
-
-        updateReel(reel.id, {
-          stage: targetStage,
-          error_message: null,
-        }, user.id);
-
-        console.log(`🔄 [Reprocessar] Reel #${reel.id} do Usuário #${user.id} redefinido para o estágio "${targetStage}" em lote.`);
-      }
-
-      // Executar em background de forma sequencial (1 por vez) para prevenir sobrecarga de CPU/RAM com FFmpeg
-      (async () => {
-        for (const reel of failedReels) {
-          try {
-            console.log(`🎬 [Fila Reprocessamento] Processando Reel #${reel.id} (${failedReels.indexOf(reel) + 1}/${failedReels.length})...`);
-            await processReel(reel.id);
-          } catch (err) {
-            console.error(`❌ [Fila Reprocessamento] Erro no Reel #${reel.id}:`, err);
-          }
-        }
-        console.log(`✅ [Fila Reprocessamento] Lote de ${failedReels.length} reels concluído.`);
-      })().catch((err) => {
-        console.error('❌ [Fila Reprocessamento] Erro geral na fila de reprocessamento:', err);
-      });
-
-      return NextResponse.json({
-        success: true,
-        message: `${failedReels.length} reels colocados na fila de reprocessamento sequencial com sucesso.`,
-        data: { count: failedReels.length }
-      });
-    }
-
-    const reel = getReelById(Number(reelId), user.id);
-    if (!reel) {
-      return NextResponse.json(
-        { success: false, error: 'Reel não encontrado ou não pertence a você' },
-        { status: 404 }
-      );
-    }
-
-    // Determinar o estágio para redefinir com base nos arquivos locais existentes
-    let targetStage: 'discovered' | 'downloaded' | 'processed' | 'uploaded' = 'discovered';
-    
-    if (reel.r2_url) {
-      targetStage = 'uploaded'; // Tem R2 url, pode tentar apenas publicar de novo
-    } else if (reel.processed_path && fs.existsSync(reel.processed_path)) {
-      targetStage = 'processed'; // Tem vídeo processado localmente, pula download e processamento
-    } else if (reel.local_path && fs.existsSync(reel.local_path)) {
-      targetStage = 'downloaded'; // Tem vídeo original baixado localmente, pula download
-    }
-
-    // Atualizar estágio e limpar mensagem de erro no banco
-    updateReel(reel.id, {
-      stage: targetStage,
-      error_message: null,
-    }, user.id);
-
-    console.log(`🔄 [Reprocessar] Reel #${reel.id} do Usuário #${user.id} redefinido para o estágio "${targetStage}". Iniciando pipeline em background...`);
-
-    // Disparar o pipeline em background sem dar await para retornar resposta rápida para a UI
-    processReel(reel.id).catch((err) => {
-      console.error(`❌ [Reprocessar] Erro em background ao reprocessar Reel #${reel.id}:`, err);
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: `Reprocessamento iniciado a partir do estágio: ${targetStage}`,
-      data: {
-        stage: targetStage
-      }
-    });
-  } catch (error) {
-    console.error('❌ Erro no endpoint de reprocessamento:', error);
+  const user = await getLoggedInUser();
+  if (!user)
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
+      { success: false, error: "Faça login primeiro." },
+      { status: 401 },
+    );
+  try {
+    const { reelId, allFailed } = await request.json();
+    if (allFailed !== true && (!Number.isSafeInteger(reelId) || reelId < 1))
+      return NextResponse.json(
+        { success: false, error: "Informe um Reel válido ou allFailed=true." },
+        { status: 400 },
+      );
+    const ids =
+      allFailed === true
+        ? getReelsByStage(user.id, "error").map((r) => r.id)
+        : [reelId];
+    const jobs = ids.map((id) => enqueueReel(user.id, id, true));
+    return NextResponse.json(
+      {
+        success: true,
+        message: `${jobs.length} tarefa(s) registrada(s). Resultados incertos permanecem em revisão.`,
+        data: { jobs, count: jobs.length },
+      },
+      { status: 202 },
+    );
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: safeError(error) },
+      { status: 400 },
     );
   }
 }

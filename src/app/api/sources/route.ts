@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
 import {
   initDatabase,
   getAllSources,
@@ -6,9 +6,10 @@ import {
   getSourceById,
   createSource,
   deleteSource,
-} from '@/services/database';
-import { getLoggedInUser } from '@/services/auth';
-import type { ApiResponse } from '@/types';
+} from "@/services/database";
+import { getLoggedInUser } from "@/services/auth";
+import type { ApiResponse } from "@/types";
+import { getQueue, enqueueSource } from "@/services/pipeline";
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -25,22 +26,39 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
     const user = await getLoggedInUser();
     if (!user) {
       return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
+        { success: false, error: "Não autorizado. Faça login primeiro." },
+        { status: 401 },
       );
     }
 
-    const sources = getAllSources(user.id);
+    const q = getQueue();
+    const sources = getAllSources(user.id).map((source) => {
+      const job = q.db
+        .prepare(
+          `SELECT status,error_message FROM pipeline_jobs WHERE user_id=? AND ref_id=? AND kind IN ('discover','collect') ORDER BY updated_at DESC LIMIT 1`,
+        )
+        .get(user.id, source.id) as
+        { status: string; error_message: string | null } | undefined;
+      return {
+        ...source,
+        pipeline_status: job?.status,
+        pipeline_error: job?.error_message,
+      };
+    });
 
     return NextResponse.json({
       success: true,
       data: { sources },
     });
   } catch (error) {
-    console.error('❌ Erro ao listar sources:', error);
+    console.error("❌ Erro ao listar sources:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro interno do servidor",
+      },
+      { status: 500 },
     );
   }
 }
@@ -49,43 +67,56 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
  * POST /api/sources
  * Adiciona um novo perfil-fonte para monitoramento do usuário logado.
  */
-export async function POST(request: Request): Promise<NextResponse<ApiResponse>> {
+export async function POST(
+  request: Request,
+): Promise<NextResponse<ApiResponse>> {
   try {
     ensureDb();
     const user = await getLoggedInUser();
     if (!user) {
       return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
+        { success: false, error: "Não autorizado. Faça login primeiro." },
+        { status: 401 },
       );
     }
 
     const body = await request.json();
-    const { username, platform } = body as { username?: string; platform?: 'instagram' | 'tiktok' | 'facebook' | 'youtube' };
+    const { username, platform } = body as {
+      username?: string;
+      platform?: "instagram" | "tiktok" | "facebook" | "youtube";
+    };
 
-    if (!username || typeof username !== 'string') {
+    if (!username || typeof username !== "string") {
       return NextResponse.json(
-        { success: false, error: 'O campo "username" é obrigatório e deve ser uma string válida' },
-        { status: 400 }
+        {
+          success: false,
+          error:
+            'O campo "username" é obrigatório e deve ser uma string válida',
+        },
+        { status: 400 },
       );
     }
 
-    const activePlatform = platform || 'instagram';
-    const validPlatforms = ['instagram', 'tiktok', 'facebook', 'youtube'];
+    const activePlatform = platform || "instagram";
+    const validPlatforms = ["instagram", "tiktok", "facebook", "youtube"];
     if (!validPlatforms.includes(activePlatform)) {
       return NextResponse.json(
-        { success: false, error: 'Plataforma inválida. Escolha entre instagram, tiktok, facebook ou youtube' },
-        { status: 400 }
+        {
+          success: false,
+          error:
+            "Plataforma inválida. Escolha entre instagram, tiktok, facebook ou youtube",
+        },
+        { status: 400 },
       );
     }
 
     // Limpar o username: remover @ e espaços
-    const cleanUsername = username.trim().replace(/^@/, '').toLowerCase();
+    const cleanUsername = username.trim().replace(/^@/, "").toLowerCase();
 
     if (!cleanUsername || cleanUsername.length < 1) {
       return NextResponse.json(
-        { success: false, error: 'Username inválido' },
-        { status: 400 }
+        { success: false, error: "Username inválido" },
+        { status: 400 },
       );
     }
 
@@ -95,18 +126,26 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       return NextResponse.json(
         {
           success: false,
-          error: 'Username inválido. Use apenas letras, números, pontos, traços e underscores (máx. 50 caracteres)',
+          error:
+            "Username inválido. Use apenas letras, números, pontos, traços e underscores (máx. 50 caracteres)",
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     // Verificar se já existe para este usuário nesta plataforma
-    const existing = getSourceByUsername(cleanUsername, user.id, activePlatform);
+    const existing = getSourceByUsername(
+      cleanUsername,
+      user.id,
+      activePlatform,
+    );
     if (existing) {
       return NextResponse.json(
-        { success: false, error: `O perfil @${cleanUsername} já está cadastrado para sua conta no ${activePlatform}` },
-        { status: 409 }
+        {
+          success: false,
+          error: `O perfil @${cleanUsername} já está cadastrado para sua conta no ${activePlatform}`,
+        },
+        { status: 409 },
       );
     }
 
@@ -114,18 +153,23 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
       username: cleanUsername,
       platform: activePlatform,
       display_name: `@${cleanUsername}`,
-      user_id: user.id
+      user_id: user.id,
     });
+    enqueueSource(user.id, source.id, true);
 
     return NextResponse.json(
       { success: true, data: { source } },
-      { status: 201 }
+      { status: 201 },
     );
   } catch (error) {
-    console.error('❌ Erro ao criar source:', error);
+    console.error("❌ Erro ao criar source:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro interno do servidor",
+      },
+      { status: 500 },
     );
   }
 }
@@ -134,24 +178,29 @@ export async function POST(request: Request): Promise<NextResponse<ApiResponse>>
  * DELETE /api/sources
  * Remove um perfil-fonte pelo ID do usuário logado.
  */
-export async function DELETE(request: Request): Promise<NextResponse<ApiResponse>> {
+export async function DELETE(
+  request: Request,
+): Promise<NextResponse<ApiResponse>> {
   try {
     ensureDb();
     const user = await getLoggedInUser();
     if (!user) {
       return NextResponse.json(
-        { success: false, error: 'Não autorizado. Faça login primeiro.' },
-        { status: 401 }
+        { success: false, error: "Não autorizado. Faça login primeiro." },
+        { status: 401 },
       );
     }
 
     const body = await request.json();
     const { id } = body as { id?: number };
 
-    if (!id || typeof id !== 'number') {
+    if (!id || typeof id !== "number") {
       return NextResponse.json(
-        { success: false, error: 'O campo "id" é obrigatório e deve ser um número' },
-        { status: 400 }
+        {
+          success: false,
+          error: 'O campo "id" é obrigatório e deve ser um número',
+        },
+        { status: 400 },
       );
     }
 
@@ -159,16 +208,19 @@ export async function DELETE(request: Request): Promise<NextResponse<ApiResponse
     const source = getSourceById(id, user.id);
     if (!source) {
       return NextResponse.json(
-        { success: false, error: `Perfil-fonte com ID ${id} não encontrado ou não pertence a você` },
-        { status: 404 }
+        {
+          success: false,
+          error: `Perfil-fonte com ID ${id} não encontrado ou não pertence a você`,
+        },
+        { status: 404 },
       );
     }
 
     const deleted = deleteSource(id, user.id);
     if (!deleted) {
       return NextResponse.json(
-        { success: false, error: 'Não foi possível remover o perfil-fonte' },
-        { status: 500 }
+        { success: false, error: "Não foi possível remover o perfil-fonte" },
+        { status: 500 },
       );
     }
 
@@ -177,10 +229,14 @@ export async function DELETE(request: Request): Promise<NextResponse<ApiResponse
       message: `Perfil @${source.username} removido com sucesso`,
     });
   } catch (error) {
-    console.error('❌ Erro ao remover source:', error);
+    console.error("❌ Erro ao remover source:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Erro interno do servidor' },
-      { status: 500 }
+      {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Erro interno do servidor",
+      },
+      { status: 500 },
     );
   }
 }
