@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { safeError } from './jobs';
 
 const getGemini = (): GoogleGenAI | null => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -46,7 +47,7 @@ interface CaptionProvider {
 }
 
 /**
- * Modelos Gemini com camada gratuita, em ordem de prioridade. Os limites de uso
+ * Modelos Gemini em ordem de prioridade. A disponibilidade e os limites de uso
  * são definidos pelo projeto da chave no Google AI Studio.
  */
 function getCaptionProviders(): CaptionProvider[] {
@@ -55,8 +56,8 @@ function getCaptionProviders(): CaptionProvider[] {
   const gemini = getGemini();
   if (gemini) {
     const models = new Set([
-      process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
-      process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite',
+      process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+      process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite',
     ]);
 
     for (const model of models) {
@@ -64,15 +65,14 @@ function getCaptionProviders(): CaptionProvider[] {
         key: `gemini:${model}`,
         name: `Gemini (${model})`,
         generate: async (systemPrompt, userPrompt) => {
-          // Modelos Gemini 3 não aceitam temperature; o formato JSON é garantido pelo schema
-          const interaction = await gemini.interactions.create({
+          // Legendas são gerações sem estado; não dependem do endpoint Interactions.
+          const response = await gemini.models.generateContent({
             model,
-            system_instruction: systemPrompt,
-            input: userPrompt,
-            response_format: {
-              type: 'text',
-              mime_type: 'application/json',
-              schema: {
+            contents: userPrompt,
+            config: {
+              systemInstruction: systemPrompt,
+              responseMimeType: 'application/json',
+              responseJsonSchema: {
                 type: 'object',
                 properties: {
                   legenda: { type: 'string' },
@@ -80,9 +80,11 @@ function getCaptionProviders(): CaptionProvider[] {
                 },
                 required: ['legenda', 'hashtags'],
               },
+              // A fila persistente controla as retentativas; o SDK não cria outra fila.
+              httpOptions: { timeout: AI_TIMEOUT_MS, retryOptions: { attempts: 1 } },
             },
-          }, { timeout: AI_TIMEOUT_MS, maxRetries: 0 });
-          return interaction.output_text;
+          });
+          return response.text;
         },
       });
     }
@@ -283,6 +285,7 @@ Responda somente com um JSON no formato:
 {"legenda": "texto reescrito", "hashtags": ["#exemplo1", "#exemplo2"]}`;
 
   const userPrompt = `LEGENDA ORIGINAL:\n\n${originalCaption}\n\nHASHTAGS DA FONTE (use apenas se forem sobre o assunto):\n${sourceHashtags || 'Nenhuma.'}`;
+  let lastFailure = '';
 
   // Tenta cada provedor em ordem; se o principal falhar ou devolver cópia, cai para o próximo.
   for (const [index, provider] of providers.entries()) {
@@ -336,11 +339,14 @@ Responda somente com um JSON no formato:
       );
       return finalCaption;
     } catch (error) {
-      // O SDK do Gemini guarda a mensagem útil do Google em `body`, não em `message`
+      // Preserva o status e aceita detalhes em body ou Error.message, conforme o SDK.
       const body = (error as { body?: unknown })?.body;
       const detail = typeof body === 'string' ? body.match(/"message":\s*"([^"]+)"/)?.[1] : undefined;
-      const msg = detail || (error instanceof Error ? error.message : String(error));
-      console.error(`❌ Erro ao reescrever legenda via ${provider.name}: ${msg}`);
+      const status = (error as { status?: number })?.status;
+      const msg = [status, detail || (error instanceof Error ? error.message : String(error))]
+        .filter(Boolean).join(' ');
+      lastFailure = safeError(`${provider.name}: ${msg}`);
+      console.error(`❌ Erro ao reescrever legenda via ${lastFailure}`);
       if (!isLast) {
         providerCooldownUntil.set(provider.key, Date.now() + AI_COOLDOWN_MS);
         console.warn(`⏸️ ${provider.name} em pausa por ${AI_COOLDOWN_MS / 60000} min — os próximos reels vão direto para a reserva.`);
@@ -349,6 +355,6 @@ Responda somente com um JSON no formato:
   }
 
   throw new Error(
-    'Nenhuma IA conseguiu reescrever a legenda com pelo menos 6 hashtags relevantes. Publicação bloqueada para não reutilizar a legenda original.'
+    `Não foi possível reescrever a legenda. Último erro: ${lastFailure}. Publicação aguardando uma legenda válida.`
   );
 }

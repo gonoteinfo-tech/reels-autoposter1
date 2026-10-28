@@ -36,6 +36,8 @@ npm run build
 
 `npm ci` precisa incluir dependências de desenvolvimento durante o build. O worker usa `tsx` como dependência de produção. Não copie `.env.local`, banco ou cookies para o Git.
 
+A reescrita de legendas usa a API `generateContent` do Gemini com saída JSON validada. `GEMINI_MODEL` escolhe o principal (padrão `gemini-3.6-flash`) e `GEMINI_FALLBACK_MODEL` o reserva (`gemini-3.5-flash-lite`). O acesso, os limites e a cobrança dependem do projeto da chave. O SDK faz uma chamada por modelo; a fila controla as novas tentativas. Falhas mostram a causa do provedor com dados sensíveis ocultos e preservam o download já realizado. Após corrigir uma falha antiga, use **Reprocessar** no Reel correspondente para uma nova tentativa.
+
 Em desenvolvimento, dois terminais:
 
 ```bash
