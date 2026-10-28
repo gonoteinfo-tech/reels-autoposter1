@@ -51,7 +51,7 @@ export function recoverInterruptedPublications(q: JobQueue): number {
     .run().changes;
 }
 
-/** One VPS worker, one heavy video operation, plus one lightweight collector. */
+/** One VPS worker: one video preparation, plus independent publishing and collection. */
 export async function runWorker(signal: AbortSignal): Promise<void> {
   const q = getQueue(),
     owner = randomUUID();
@@ -108,6 +108,17 @@ export async function runWorker(signal: AbortSignal): Promise<void> {
     if (!enabled) return;
     for (const user of users) {
       const settings = getAppSettings(user.id);
+      if (settings.publish_interval_minutes === 0) {
+        // Error-free publish waits without a remote session are old pacing reservations.
+        // Preserve provider retries and polling of containers already being processed.
+        const now = Date.now();
+        q.db.prepare(`UPDATE pipeline_jobs SET available_at=0,updated_at=?
+          WHERE user_id=? AND kind='publish' AND status='retry_wait'
+          AND error_code IS NULL AND available_at>?
+          AND NOT EXISTS(SELECT 1 FROM pipeline_publications p
+            WHERE p.reel_id=pipeline_jobs.ref_id AND p.user_id=pipeline_jobs.user_id
+            AND p.target=json_extract(pipeline_jobs.payload,'$.target'))`).run(now, user.id, now);
+      }
       const expression = settings.cron_schedule;
       if (!cron.validate(expression)) {
         q.setState(
@@ -148,7 +159,8 @@ export async function runWorker(signal: AbortSignal): Promise<void> {
         nextRefresh = Date.now() + 15_000;
       }
       if (q.state("paused") !== "true") {
-        start("heavy", ["prepare", "publish"]);
+        start("prepare", ["prepare"]);
+        start("publish", ["publish"]);
         start("collection", ["collect", "discover"]);
       }
       await delay(1000, undefined, { signal: abort });

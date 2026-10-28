@@ -89,7 +89,7 @@ interface PublishOptions {
 /** Each invocation performs at most one remote step and checkpoints it durably. */
 export async function publishStep(
   o: PublishOptions,
-): Promise<{ done: boolean; postId?: string }> {
+): Promise<{ done: boolean; postId?: string; waitMs?: number }> {
   const { db, userId, reelId, target } = o;
   o.assertOwned();
   db.prepare(
@@ -217,7 +217,7 @@ export async function publishStep(
       null,
       uploadUrl,
     );
-    return { done: false };
+    return { done: false, waitMs: target === "facebook" ? 0 : 15_000 };
   }
   if (target === "instagram") {
     if (row.phase === "processing") {
@@ -228,7 +228,10 @@ export async function publishStep(
         { fields: "status_code,status" },
         o.signal,
       );
-      if (status.status_code === "FINISHED") save("ready");
+      if (status.status_code === "FINISHED") {
+        save("ready");
+        return { done: false, waitMs: 0 };
+      }
       else if (status.status_code === "PUBLISHED")
         throw new PipelineError(
           "Container já publicado; confirme o ID do post no Instagram.",
@@ -271,7 +274,7 @@ export async function publishStep(
       o.signal,
     );
     save("transferred");
-    return { done: false };
+    return { done: false, waitMs: 0 };
   }
   if (row.phase === "transferred") {
     await mutate("submitting", () =>

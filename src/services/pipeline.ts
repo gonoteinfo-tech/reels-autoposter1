@@ -589,6 +589,7 @@ async function collect(job: Job, q: JobQueue, settings: AppSettings) {
 }
 
 function reserveWindow(job: Job, q: JobQueue, settings: AppSettings): number {
+  if (settings.publish_interval_minutes === 0) return 0;
   return q.db
     .transaction(() => {
       q.assertOwned(job);
@@ -723,7 +724,7 @@ async function publish(
     assertOwned: () => q.assertOwned(job),
     signal,
   });
-  if (!result.done) throw new Wait(Date.now() + 15_000);
+  if (!result.done) throw new Wait(Date.now() + (result.waitMs ?? 15_000));
   q.assertOwned(job);
   const updated = db.updateReel(
     job.ref_id,

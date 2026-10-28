@@ -15,7 +15,9 @@ O painel registra tarefas no banco; a automação continua mesmo com o navegador
 - Credenciais/configuração ausentes: estado bloqueado com orientação no painel. Salvar configurações reavalia esses bloqueios.
 - Resposta externa incerta: revisão necessária. O painel permite confirmar o post existente ou autorizar outra tentativa após verificar que não houve envio/coleta.
 
-Fila SQLite com transações, deduplicação, lease, heartbeat e token de execução. Um worker ativo por VPS, uma operação pesada e uma coleta simultâneas. SQLite deve estar em disco local; não use NFS nem compartilhe o arquivo entre servidores.
+Fila SQLite com transações, deduplicação, lease, heartbeat e token de execução. Um worker ativo por VPS, com uma preparação de vídeo, uma publicação e uma coleta independentes. Assim, o processamento de um vídeo não impede a publicação de outro já pronto; continua havendo somente uma preparação pesada por vez. SQLite deve estar em disco local; não use NFS nem compartilhe o arquivo entre servidores.
+
+Vídeos sem logo que já correspondem ao formato de saída (1080×1920, H.264/30 fps e áudio AAC compatível, quando presente) seguem por remux com `+faststart`, preservando os streams. Os demais continuam sendo normalizados. A publicação avança sem espera fixa nas transições já confirmadas; a consulta de processamento pendente da Meta mantém o intervalo de acompanhamento. Para coletar um lote de 10 e publicar conforme cada vídeo ficar pronto, configure **Vídeos por coleta = 10** e **Intervalo entre publicações = 0** na conta desejada. Um valor positivo mantém a espera configurada. O tempo de coleta, geração de legenda, upload e processamento externo continua dependendo dos provedores e dos recursos da VPS.
 
 ## Requisitos
 
