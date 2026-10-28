@@ -13,6 +13,7 @@ import {
   collectProfileDiscovery,
   isBrightDataConfigured,
   startSingleReelDiscovery,
+  BrightDataSnapshotError,
 } from "./brightdata-discoverer";
 import { downloadMedia, checkDiskSpace, runTool } from "./media";
 import { normalizeVideo } from "./video-processor";
@@ -537,12 +538,22 @@ async function collect(job: Job, q: JobQueue, settings: AppSettings) {
   const snapshot = payload.snapshot || source.pending_snapshot_id;
   if (!snapshot) return;
   const platform = source.platform === "facebook" ? "facebook" : "instagram";
-  const items = await collectProfileDiscovery(
-    snapshot,
-    source.username,
-    platform,
-    settings.discovery_limit,
-  );
+  let items;
+  try {
+    items = await collectProfileDiscovery(
+      snapshot,
+      source.username,
+      platform,
+      settings.discovery_limit,
+    );
+  } catch (error) {
+    if (error instanceof BrightDataSnapshotError) {
+      q.assertOwned(job);
+      db.clearSourcePendingSnapshotIf(source.id, snapshot);
+      throw new PipelineError(error.message, "failed", error.code);
+    }
+    throw error;
+  }
   if (!items) {
     const start =
       payload.started ||
@@ -578,6 +589,7 @@ async function collect(job: Job, q: JobQueue, settings: AppSettings) {
 }
 
 function reserveWindow(job: Job, q: JobQueue, settings: AppSettings): number {
+  if (settings.publish_interval_minutes === 0) return 0;
   return q.db
     .transaction(() => {
       q.assertOwned(job);
@@ -712,7 +724,7 @@ async function publish(
     assertOwned: () => q.assertOwned(job),
     signal,
   });
-  if (!result.done) throw new Wait(Date.now() + 15_000);
+  if (!result.done) throw new Wait(Date.now() + (result.waitMs ?? 15_000));
   q.assertOwned(job);
   const updated = db.updateReel(
     job.ref_id,

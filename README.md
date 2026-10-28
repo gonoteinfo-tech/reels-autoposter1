@@ -6,6 +6,7 @@ O painel registra tarefas no banco; a automação continua mesmo com o navegador
 ## Como funciona
 
 - Instagram e Facebook: coleta de perfis com Bright Data, snapshots acompanhados a cada 15 segundos.
+- A descoberta de perfis Instagram usa `discover_by=url_all_reels`, mantendo `num_of_posts` igual ao limite de coleta configurado.
 - TikTok/YouTube: descoberta e download com `yt-dlp` atualizado.
 - Preparação: download limitado, legenda jornalística com Gemini, normalização 1080×1920/H.264/AAC e marca d'água opcional com FFmpeg.
 - Cloudflare R2: envio em stream; URL pública usada pela Meta.
@@ -14,7 +15,9 @@ O painel registra tarefas no banco; a automação continua mesmo com o navegador
 - Credenciais/configuração ausentes: estado bloqueado com orientação no painel. Salvar configurações reavalia esses bloqueios.
 - Resposta externa incerta: revisão necessária. O painel permite confirmar o post existente ou autorizar outra tentativa após verificar que não houve envio/coleta.
 
-Fila SQLite com transações, deduplicação, lease, heartbeat e token de execução. Um worker ativo por VPS, uma operação pesada e uma coleta simultâneas. SQLite deve estar em disco local; não use NFS nem compartilhe o arquivo entre servidores.
+Fila SQLite com transações, deduplicação, lease, heartbeat e token de execução. Um worker ativo por VPS, com uma preparação de vídeo, uma publicação e uma coleta independentes. Assim, o processamento de um vídeo não impede a publicação de outro já pronto; continua havendo somente uma preparação pesada por vez. SQLite deve estar em disco local; não use NFS nem compartilhe o arquivo entre servidores.
+
+Vídeos sem logo que já correspondem ao formato de saída (1080×1920, H.264/30 fps e áudio AAC compatível, quando presente) seguem por remux com `+faststart`, preservando os streams. Os demais continuam sendo normalizados. A publicação avança sem espera fixa nas transições já confirmadas; a consulta de processamento pendente da Meta mantém o intervalo de acompanhamento. Para coletar um lote de 10 e publicar conforme cada vídeo ficar pronto, configure **Vídeos por coleta = 10** e **Intervalo entre publicações = 0** na conta desejada. Um valor positivo mantém a espera configurada. O tempo de coleta, geração de legenda, upload e processamento externo continua dependendo dos provedores e dos recursos da VPS.
 
 ## Requisitos
 
@@ -101,6 +104,8 @@ O diagnóstico não faz chamadas externas nem mostra tokens. Ele verifica execut
 5. A seleção de páginas OAuth fica disponível por 10 minutos e sobrevive a reinício do web. Se expirar, reconecte.
 
 “Rodar agora”, sincronizar fonte, publicar e reprocessar retornam **HTTP 202** com IDs de tarefas persistidas. A resposta significa enfileiramento; o estado final aparece no painel. GETs não iniciam o agendador nem revertem uma pausa.
+
+Um snapshot Bright Data com status `ready` pode conter registros de erro do crawler. Se nenhum registro tiver um vídeo utilizável, a coleta termina com falha e o motivo aparece na fonte. Em `scraper_rate_limited`, aguarde a recuperação do scraper antes de usar **Sincronizar**; o app não dispara uma nova coleta paga apenas por ter recebido esse erro. O snapshot concluído com falha é liberado, enquanto uma falha temporária ao consultar a API mantém o snapshot para outra leitura. Um resultado realmente vazio (`[]`) continua válido. Um ciclo do cron que não iniciou nova coleta não apaga a falha exibida na fonte.
 
 A pausa global impede novas admissões; o trabalho em andamento pode terminar. Desligar publicação automática bloqueia novas tarefas automáticas; uma publicação manual explicitamente solicitada continua permitida. Não desligue serviços durante um envio se puder esperar sua conclusão.
 

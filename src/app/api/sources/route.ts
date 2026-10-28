@@ -35,7 +35,13 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
     const sources = getAllSources(user.id).map((source) => {
       const job = q.db
         .prepare(
-          `SELECT status,error_message FROM pipeline_jobs WHERE user_id=? AND ref_id=? AND kind IN ('discover','collect') ORDER BY updated_at DESC LIMIT 1`,
+          `SELECT status,error_message FROM pipeline_jobs
+          WHERE user_id=? AND ref_id=? AND kind IN ('discover','collect')
+          ORDER BY CASE
+            WHEN status='needs_review' THEN 0
+            WHEN status IN ('queued','running','retry_wait') THEN 1
+            WHEN status IN ('blocked','failed') THEN 2
+            ELSE 3 END, updated_at DESC LIMIT 1`,
         )
         .get(user.id, source.id) as
         { status: string; error_message: string | null } | undefined;
