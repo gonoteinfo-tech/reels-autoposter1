@@ -1,0 +1,29 @@
+[Unit]
+Description=GO POST durable pipeline worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/reels-autoposter
+Environment=NODE_ENV=production
+Environment=DATA_DIR=/opt/reels-autoposter/data
+Environment=TZ=America/Sao_Paulo
+EnvironmentFile=-/opt/reels-autoposter/.env
+EnvironmentFile=-/opt/reels-autoposter/.env.local
+ExecStart=/usr/bin/node --import tsx /opt/reels-autoposter/scripts/worker.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/reels-autoposter/data
+
+[Install]
+WantedBy=multi-user.target

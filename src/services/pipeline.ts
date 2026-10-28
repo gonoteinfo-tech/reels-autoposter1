@@ -1,779 +1,814 @@
-import path from 'path';
-import fs from 'fs';
-import type { PipelineResult, ReelStage, SourceProfile, User } from '@/types';
+import fs from "node:fs";
+import path from "node:path";
+import { DATA_DIR } from "./paths";
+import { JobQueue, type Job, safeError } from "./jobs";
+import { PipelineError, publishStep } from "./publications";
+import * as db from "./database";
 import {
-  initDatabase,
-  getActiveSources,
-  getReelByUrl,
-  getReelByInstagramId,
-  createReel,
-  updateReelStage,
-  updateReel,
-  updateSourceLastChecked,
-  getReelsByStage,
-  getReelById,
-  getAppSettings,
-  getAllUsers,
-  getUserById,
-  getLastPublishedAt,
-  setSourcePendingSnapshot,
-  clearSourcePendingSnapshotIf,
-  isVideoFileUsedByPendingReel,
-  getPublishedTotalCount,
-} from './database';
-import { discoverReels, downloadReel, downloadFromDirectUrl, extractVideoId, hasCookiesConfigured } from './instagram-downloader';
-import { collectReelsDiscovery, fetchSingleReelBrightData, isBrightDataConfigured, startReelsDiscovery } from './brightdata-discoverer';
-import { addLogoToVideo } from './video-processor';
-import { uploadVideo, generateR2Key } from './storage';
-import { publishReel as publishToInstagram } from './instagram-publisher';
-import { publishReelToPage } from './facebook-publisher';
-import { rewriteCaption, ensureMinimumHashtags } from './ai-caption';
-import { getPublishCredentials, hasPublishDestination } from './publish-credentials';
-import { getUserLogoPath } from './logo-storage';
+  getPublishCredentials,
+  hasPublishDestination,
+} from "./publish-credentials";
+import {
+  startProfileDiscovery,
+  collectProfileDiscovery,
+  isBrightDataConfigured,
+  startSingleReelDiscovery,
+} from "./brightdata-discoverer";
+import { downloadMedia, checkDiskSpace, runTool } from "./media";
+import { normalizeVideo } from "./video-processor";
+import { rewriteCaption, ensureMinimumHashtags } from "./ai-caption";
+import { uploadVideo } from "./storage";
+import { getUserLogoPath } from "./logo-storage";
+import { extractVideoId, normalizeVideoUrl } from "./instagram-downloader";
+import type { AppSettings, Reel } from "@/types";
 
-/** Após este tempo (min) sem resultado, uma coleta pendente da Bright Data é descartada e disparada de novo */
-const BRIGHTDATA_PENDING_MAX_MINUTES = 30;
-
-/** Diretórios de trabalho do pipeline */
-const DOWNLOADS_DIR = path.join(process.cwd(), 'data', 'downloads');
-const PROCESSED_DIR = path.join(process.cwd(), 'data', 'processed');
-
-/**
- * Apaga da VPS os arquivos locais de um reel já publicado (original e processado).
- * A publicação usa a cópia no R2, então os arquivos locais não são mais necessários.
- * Falhas aqui só geram aviso — nunca afetam a publicação.
- */
-function removeLocalVideoFiles(reel: { id: number; local_path: string | null; processed_path: string | null }): void {
-  let freedBytes = 0;
-  for (const filePath of [reel.local_path, reel.processed_path]) {
-    if (!filePath) continue;
-    // Arquivo compartilhado com reel de outro usuário ainda na fila: não apagar
-    if (isVideoFileUsedByPendingReel(filePath, reel.id)) continue;
-    try {
-      if (fs.existsSync(filePath)) {
-        freedBytes += fs.statSync(filePath).size;
-        fs.unlinkSync(filePath);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`⚠️ Reel #${reel.id}: não foi possível apagar ${filePath}: ${msg}`);
-    }
+class Wait extends Error {
+  constructor(public when: number) {
+    super("Aguardando próxima etapa.");
   }
-  updateReel(reel.id, { local_path: null, processed_path: null });
-  if (freedBytes > 0) {
-    console.log(`🧹 Reel #${reel.id}: arquivos locais apagados após a publicação (${(freedBytes / 1024 / 1024).toFixed(1)} MB liberados)`);
+}
+export function getQueue() {
+  return new JobQueue(db.getDb());
+}
+export function buildCaption(
+  caption: string,
+  hashtags: string,
+  template: string,
+): string {
+  const text = template
+    ? template
+        .replace("{caption}", caption || "")
+        .replace("{hashtags}", hashtags || "")
+    : [caption, caption.includes("#") ? "" : hashtags]
+        .filter(Boolean)
+        .join("\n\n");
+  return ensureMinimumHashtags(text, hashtags, 6).slice(0, 2200);
+}
+
+function destination(userId: number, settings: AppSettings) {
+  const creds = getPublishCredentials(userId, settings);
+  if (!hasPublishDestination(creds))
+    throw new PipelineError(
+      "Conecte e selecione sua página em Configurações → Conta Meta.",
+      "blocked",
+      "credentials",
+    );
+  if (!settings.instagram_enabled && !settings.facebook_enabled)
+    throw new PipelineError(
+      "Ative Instagram ou Facebook nas Configurações.",
+      "blocked",
+      "destinations",
+    );
+  return creds;
+}
+
+export function enqueueReel(
+  userId: number,
+  reelId: number,
+  revive = false,
+  q = getQueue(),
+): Job {
+  const reel = db.getReelById(reelId, userId);
+  if (!reel)
+    throw new PipelineError("Reel não encontrado.", "failed", "not_found");
+  return q.enqueue(userId, "prepare", reelId, { manual: revive }, revive);
+}
+export function enqueueSource(
+  userId: number,
+  sourceId: number,
+  force = false,
+  q = getQueue(),
+): Job {
+  const source = db.getSourceById(sourceId, userId);
+  if (!source || source.username === "manual")
+    throw new PipelineError(
+      "Fonte não encontrada ou manual.",
+      "failed",
+      "not_found",
+    );
+  return source.pending_snapshot_id
+    ? q.enqueue(
+        userId,
+        "collect",
+        sourceId,
+        { snapshot: source.pending_snapshot_id },
+        true,
+      )
+    : q.enqueue(userId, "discover", sourceId, { force }, true);
+}
+export function enqueueUserRun(
+  userId: number,
+  force = false,
+  q = getQueue(),
+): Job[] {
+  const jobs: Job[] = [];
+  for (const source of db.getActiveSources(userId))
+    if (source.username !== "manual")
+      jobs.push(enqueueSource(userId, source.id, force, q));
+  const settings = db.getAppSettings(userId);
+  const reels = q.db
+    .prepare(
+      `SELECT * FROM reels WHERE user_id=? AND stage NOT IN ('published','error') ORDER BY created_at LIMIT ?`,
+    )
+    .all(userId, settings.max_reels_per_run) as Reel[];
+  for (const reel of reels) jobs.push(enqueueReel(userId, reel.id, force, q));
+  return jobs;
+}
+
+interface DownloadResult {
+  filePath: string;
+  caption: string;
+  duration: number;
+}
+async function downloadOther(
+  url: string,
+  directory: string,
+  signal?: AbortSignal,
+): Promise<DownloadResult> {
+  const parsed = new URL(url);
+  if (
+    ![
+      "www.facebook.com",
+      "facebook.com",
+      "www.tiktok.com",
+      "tiktok.com",
+      "vm.tiktok.com",
+      "vt.tiktok.com",
+      "www.youtube.com",
+      "youtube.com",
+      "youtu.be",
+      "www.instagram.com",
+      "instagram.com",
+    ].includes(parsed.hostname)
+  )
+    throw new PipelineError(
+      "Plataforma de vídeo inválida.",
+      "failed",
+      "invalid_url",
+    );
+  fs.mkdirSync(directory, { recursive: true });
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--write-info-json",
+    "--max-filesize",
+    String(Number(process.env.MAX_VIDEO_BYTES) || 512 * 1024 * 1024),
+    "--match-filter",
+    `duration <= ${Number(process.env.MAX_VIDEO_SECONDS) || 900}`,
+    "-f",
+    "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+    "--remux-video",
+    "mp4",
+    "-o",
+    path.join(directory, "input.%(ext)s"),
+  ];
+  if (process.env.COOKIES_FILE)
+    args.push("--cookies", path.resolve(process.env.COOKIES_FILE));
+  args.push(url);
+  await runTool(process.env.YTDLP_PATH || "yt-dlp", args, {
+    timeout: 300_000,
+    signal,
+  });
+  const filePath = path.join(directory, "input.mp4");
+  if (!fs.existsSync(filePath))
+    throw new PipelineError(
+      "Download não produziu um vídeo MP4.",
+      "failed",
+      "invalid_media",
+    );
+  const metadataPath = path.join(directory, "input.info.json");
+  const meta = fs.existsSync(metadataPath)
+    ? JSON.parse(fs.readFileSync(metadataPath, "utf8"))
+    : {};
+  if (
+    fs.statSync(filePath).size >
+    (Number(process.env.MAX_VIDEO_BYTES) || 512 * 1024 * 1024)
+  ) {
+    fs.rmSync(filePath);
+    throw new PipelineError(
+      "Vídeo excede o limite de tamanho.",
+      "failed",
+      "invalid_media",
+    );
+  }
+  return {
+    filePath,
+    caption: meta.description || meta.title || "",
+    duration: Number(meta.duration) || 0,
+  };
+}
+
+async function discoverOther(
+  username: string,
+  platform: "tiktok" | "youtube",
+  limit: number,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (!/^[\w.-]+$/.test(username))
+    throw new PipelineError(
+      "Nome da fonte inválido.",
+      "failed",
+      "invalid_source",
+    );
+  const url =
+    platform === "tiktok"
+      ? `https://www.tiktok.com/@${username}`
+      : `https://www.youtube.com/@${username}/shorts`;
+  const output = await runTool(
+    process.env.YTDLP_PATH || "yt-dlp",
+    [
+      "--flat-playlist",
+      "--dump-json",
+      "--playlist-end",
+      String(limit),
+      "--no-warnings",
+      url,
+    ],
+    { timeout: 120_000, signal },
+  );
+  return output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      const item = JSON.parse(line);
+      const raw = item.webpage_url || item.url || "";
+      const canonical = normalizeVideoUrl(raw, platform);
+      return canonical ? [canonical] : [];
+    });
+}
+
+export interface PipelineAdapters {
+  download: typeof downloadMedia;
+  caption: typeof rewriteCaption;
+  normalize: typeof normalizeVideo;
+  upload: typeof uploadVideo;
+}
+const defaultAdapters: PipelineAdapters = {
+  download: downloadMedia,
+  caption: rewriteCaption,
+  normalize: normalizeVideo,
+  upload: uploadVideo,
+};
+
+function queueTargets(
+  reel: Reel,
+  settings: AppSettings,
+  q: JobQueue,
+  manual = false,
+) {
+  for (const target of ["instagram", "facebook"] as const) {
+    if (settings[`${target}_enabled`])
+      q.enqueue(reel.user_id, "publish", reel.id, { target, manual }, true);
   }
 }
 
-/** Resultado de uma tentativa de recolher a coleta pendente de um perfil-fonte */
-export type PendingCollectResult =
-  | { status: 'pending' }
-  | { status: 'discarded'; reason: string }
-  | { status: 'done'; newReelIds: number[] };
+async function prepare(
+  job: Job,
+  q: JobQueue,
+  settings: AppSettings,
+  signal: AbortSignal | undefined,
+  a: PipelineAdapters,
+) {
+  destination(job.user_id, settings);
+  const payload = JSON.parse(job.payload);
+  if (!settings.auto_publish && !payload.manual)
+    throw new PipelineError(
+      "Publicação automática desligada.",
+      "blocked",
+      "disabled",
+    );
+  let reel = db.getReelById(job.ref_id, job.user_id);
+  if (!reel) throw new PipelineError("Reel removido.", "failed", "not_found");
+  if (reel.stage === "published") return;
+  if (reel.r2_url) {
+    queueTargets(reel, settings, q, !!payload.manual);
+    return;
+  }
+  for (const key of [
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_BUCKET_NAME",
+    "R2_PUBLIC_URL",
+  ])
+    if (!process.env[key])
+      throw new PipelineError(
+        `${key} ausente no servidor. Configure e tente novamente.`,
+        "blocked",
+        "configuration",
+      );
+  if (
+    !reel.caption &&
+    reel.original_caption &&
+    !process.env.GEMINI_API_KEY &&
+    !process.env.GOOGLE_API_KEY
+  )
+    throw new PipelineError(
+      "Configure GEMINI_API_KEY para reescrever legendas.",
+      "blocked",
+      "configuration",
+    );
+  const directory = path.join(
+    DATA_DIR,
+    "work",
+    String(job.user_id),
+    String(job.ref_id),
+    `${job.id}-${job.attempts}-${job.lease_token?.split(":").at(-1)}`,
+  );
+  checkDiskSpace(directory);
+  const save = (patch: Parameters<typeof db.updateReel>[1]) => {
+    q.assertOwned(job);
+    reel = db.updateReel(job.ref_id, patch, job.user_id)!;
+  };
 
-/**
- * Recolhe (uma consulta, sem esperar) a coleta da Bright Data disparada para o perfil-fonte
- * e cria os reels novos. Usado pelo ciclo automático e pela sincronização manual.
- */
-export async function collectPendingDiscovery(
-  source: SourceProfile,
-  userId: number,
-  limit: number
-): Promise<PendingCollectResult> {
-  const snapshotId = source.pending_snapshot_id;
-  if (!snapshotId) return { status: 'discarded', reason: 'nenhuma coleta pendente' };
-
-  try {
-    const scrapedReels = await collectReelsDiscovery(snapshotId, source.username, limit);
-
-    if (!scrapedReels) {
-      const startedAt = new Date((source.pending_snapshot_at || '').replace(' ', 'T') + 'Z').getTime();
-      const ageMin = (Date.now() - startedAt) / 60000;
-      if (Number.isFinite(ageMin) && ageMin > BRIGHTDATA_PENDING_MAX_MINUTES) {
-        console.warn(`⚠️ [Bright Data] @${source.username}: coleta ${snapshotId} sem resultado há ${ageMin.toFixed(0)} min — descartada; será disparada de novo.`);
-        clearSourcePendingSnapshotIf(source.id, snapshotId);
-        return { status: 'discarded', reason: 'coleta demorou demais' };
+  if (!reel.local_path || !fs.existsSync(reel.local_path)) {
+    save({ stage: "downloading", error_message: null });
+    if (
+      !reel.direct_video_url &&
+      reel.instagram_url.includes("instagram.com")
+    ) {
+      if (!isBrightDataConfigured())
+        throw new PipelineError(
+          "Configure BRIGHTDATA_API_TOKEN para baixar do Instagram.",
+          "blocked",
+          "configuration",
+        );
+      if (!payload.single_snapshot) {
+        if (payload.triggering)
+          throw new PipelineError(
+            "Coleta avulsa incerta; revise a Bright Data antes de reenviar.",
+            "needs_review",
+          );
+        q.checkpoint(job, { ...payload, triggering: true });
+        const snapshot = await startSingleReelDiscovery(reel.instagram_url);
+        q.checkpoint(job, {
+          ...payload,
+          single_snapshot: snapshot,
+          snapshot_started: Date.now(),
+        });
+        throw new Wait(Date.now() + 15_000);
       }
-      console.log(`🌐 [Bright Data] @${source.username}: coleta ainda em andamento`);
-      return { status: 'pending' };
+      const items = await collectProfileDiscovery(
+        payload.single_snapshot,
+        reel.source_username,
+        "instagram",
+        1,
+      );
+      if (!items) {
+        if (Date.now() - payload.snapshot_started > 30 * 60_000)
+          throw new PipelineError(
+            "Coleta avulsa excedeu 30 minutos.",
+            "failed",
+            "snapshot_timeout",
+          );
+        throw new Wait(Date.now() + 15_000);
+      }
+      if (!items.length)
+        throw new PipelineError(
+          "Nenhum vídeo disponível para este link.",
+          "failed",
+          "empty_media",
+        );
+      save({
+        direct_video_url: items[0].videoUrl,
+        original_caption: reel.original_caption || items[0].caption,
+        hashtags: items[0].hashtags.join(" "),
+      });
     }
+    if (reel.direct_video_url) {
+      try {
+        const file = await a.download(
+          reel.direct_video_url,
+          path.join(directory, "input.mp4"),
+          signal,
+        );
+        save({ local_path: file, stage: "downloaded" });
+      } catch (error) {
+        // Renew an expiring Instagram CDN URL through a persisted collection on next attempt.
+        if (
+          reel.instagram_url.includes("instagram.com") &&
+          /HTTP 40[134]/.test(String(error))
+        ) {
+          save({ direct_video_url: null });
+          q.checkpoint(job, {});
+        }
+        throw error;
+      }
+    } else {
+      const result = await downloadOther(reel.instagram_url, directory, signal);
+      save({
+        local_path: result.filePath,
+        original_caption: reel.original_caption || result.caption,
+        duration_seconds: result.duration,
+        stage: "downloaded",
+      });
+    }
+  }
+  if (!reel.caption) {
+    q.assertOwned(job);
+    const caption = await a.caption(reel.original_caption, reel.hashtags);
+    save({ caption, error_message: null });
+  }
+  if (!reel.processed_path || !fs.existsSync(reel.processed_path)) {
+    save({ stage: "processing" });
+    const output = path.join(directory, "processed.mp4");
+    await a.normalize(
+      reel.local_path!,
+      output,
+      getUserLogoPath(job.user_id),
+      settings.logo_position,
+      settings.logo_scale,
+      signal,
+    );
+    save({ processed_path: output, stage: "processed" });
+  }
+  save({ stage: "uploading" });
+  const url = await a.upload(
+    reel.processed_path!,
+    `reels/user_${job.user_id}/reel_${job.ref_id}.mp4`,
+  );
+  save({ r2_url: url, stage: "uploaded", error_message: null });
+  queueTargets(reel, settings, q, !!payload.manual);
+}
 
-    const newReelIds: number[] = [];
-    for (const scrapedReel of scrapedReels) {
-      const reelUrl = scrapedReel.url;
-      const existing = getReelByUrl(reelUrl, userId)
-        || (scrapedReel.id ? getReelByInstagramId(scrapedReel.id, userId) : null);
-      if (existing) continue;
-
-      const created = createReel({
+async function discover(
+  job: Job,
+  q: JobQueue,
+  settings: AppSettings,
+  signal?: AbortSignal,
+) {
+  destination(job.user_id, settings);
+  const source = db.getSourceById(job.ref_id, job.user_id);
+  if (!source || !source.is_active) return;
+  if (source.pending_snapshot_id) {
+    q.enqueue(
+      job.user_id,
+      "collect",
+      source.id,
+      { snapshot: source.pending_snapshot_id },
+      true,
+    );
+    return;
+  }
+  const payload = JSON.parse(job.payload);
+  if (!payload.force && source.last_checked_at) {
+    const last = Date.parse(
+      source.last_checked_at.replace(" ", "T").replace(/Z?$/, "Z"),
+    );
+    if (Date.now() - last < settings.discovery_interval_minutes * 60_000)
+      return;
+  }
+  const platform = source.platform || "instagram";
+  if (platform === "instagram" || platform === "facebook") {
+    if (!isBrightDataConfigured())
+      throw new PipelineError(
+        "Configure BRIGHTDATA_API_TOKEN no servidor.",
+        "blocked",
+        "configuration",
+      );
+    if (payload.triggering)
+      throw new PipelineError(
+        "Coleta paga incerta; revise o resultado na Bright Data.",
+        "needs_review",
+        "uncertain",
+      );
+    q.checkpoint(job, { ...payload, triggering: true });
+    let snapshot: string;
+    try {
+      snapshot = await startProfileDiscovery(
+        source.username,
+        platform,
+        settings.discovery_limit,
+      );
+    } catch (error) {
+      if (/token|permissão/i.test(String(error)))
+        throw new PipelineError(
+          "Confira o token e as permissões Bright Data.",
+          "blocked",
+          "credentials",
+        );
+      throw new PipelineError(
+        "Não foi possível confirmar o disparo da coleta; confira a Bright Data.",
+        "needs_review",
+        "uncertain",
+      );
+    }
+    q.assertOwned(job);
+    q.db.transaction(() => {
+      db.setSourcePendingSnapshot(source.id, snapshot);
+      db.updateSourceLastChecked(source.id);
+      q.enqueue(
+        job.user_id,
+        "collect",
+        source.id,
+        { snapshot, started: Date.now() },
+        true,
+      );
+      q.checkpoint(job, { snapshot });
+    })();
+  } else {
+    const urls = await discoverOther(
+      source.username,
+      platform,
+      settings.discovery_limit,
+      signal,
+    );
+    q.assertOwned(job);
+    for (const url of urls) {
+      const reel = db.createReel({
         source_id: source.id,
         source_username: source.username,
-        instagram_url: reelUrl,
-        instagram_id: scrapedReel.id,
-        // caption fica VAZIO — a IA reescreve no download. A legenda da fonte vai em original_caption.
-        caption: '',
-        original_caption: scrapedReel.caption || '',
-        hashtags: scrapedReel.hashtags.join(' '),
-        user_id: userId,
-        // URL direta do vídeo: o download não precisa de cookies
-        direct_video_url: scrapedReel.videoUrl,
+        user_id: job.user_id,
+        instagram_url: url,
+        instagram_id: extractVideoId(url, platform) || undefined,
       });
-      if (created) newReelIds.push(created.id); // null = já existia (coleta recolhida em paralelo)
+      if (reel && settings.auto_publish)
+        enqueueReel(job.user_id, reel.id, false, q);
     }
-
-    clearSourcePendingSnapshotIf(source.id, snapshotId);
-    updateSourceLastChecked(source.id);
-    console.log(`🌐 [Bright Data] @${source.username}: ${newReelIds.length} novos reels descobertos`);
-    return { status: 'done', newReelIds };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error(`❌ [Bright Data] @${source.username}: falha ao recolher a coleta (${msg}) — será disparada de novo.`);
-    clearSourcePendingSnapshotIf(source.id, snapshotId);
-    return { status: 'discarded', reason: msg };
+    db.updateSourceLastChecked(source.id);
   }
 }
 
-/**
- * Garante que os diretórios de trabalho existem.
- */
-function ensureDirectories(): void {
-  for (const dir of [DOWNLOADS_DIR, PROCESSED_DIR]) {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
-}
-
-/**
- * Mede o tempo de execução de uma etapa e retorna um PipelineResult.
- */
-async function measureStage(
-  reelId: number,
-  stage: ReelStage,
-  fn: () => Promise<string>
-): Promise<PipelineResult> {
-  const start = Date.now();
-  try {
-    const message = await fn();
-    return {
-      reel_id: reelId,
-      stage,
-      success: true,
-      message,
-      duration_ms: Date.now() - start,
-    };
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    return {
-      reel_id: reelId,
-      stage,
-      success: false,
-      message: errorMsg,
-      duration_ms: Date.now() - start,
-    };
-  }
-}
-
-/**
- * Processa um reel individual por todas as etapas do pipeline.
- * Cada etapa atualiza o estágio no banco de dados.
- *
- * Pipeline: download → process (add logo) → upload to R2 → publish to IG + FB
- *
- * @param reelId ID do reel no banco de dados
- * @returns Array de resultados para cada etapa executada
- */
-export async function processReel(reelId: number): Promise<PipelineResult[]> {
-  console.log(`\n🔄 ===== Processando Reel #${reelId} =====`);
-  const results: PipelineResult[] = [];
-
-  ensureDirectories();
-
-  let reel = getReelById(reelId);
-  if (!reel) {
-    const result: PipelineResult = {
-      reel_id: reelId,
-      stage: 'error',
-      success: false,
-      message: `Reel #${reelId} não encontrado no banco de dados`,
-      duration_ms: 0,
-    };
-    results.push(result);
-    return results;
-  }
-
-  // Carregar as configurações específicas do usuário dono do Reel
-  const settings = getAppSettings(reel.user_id);
-
-  // ── Etapa 1: Download ──
-  if (reel.stage === 'discovered' || reel.stage === 'downloading') {
-    const downloadResult = await measureStage(reelId, 'downloading', async () => {
-      updateReelStage(reelId, 'downloading');
-
-      let filePath: string;
-      let metadata: { title?: string; description?: string; duration?: number };
-
-      const isInstagramUrl = reel!.instagram_url.includes('instagram.com');
-      const canUseBrightData = isInstagramUrl && isBrightDataConfigured();
-      const reelIdForFile = reel!.instagram_id || String(reelId);
-      let brightDataError: string | undefined;
-
-      /** Busca na Bright Data uma URL direta nova para o vídeo e a guarda no reel */
-      const refreshDirectUrl = async (): Promise<string | undefined> => {
-        try {
-          const scrapedInfo = await fetchSingleReelBrightData(reel!.instagram_url);
-          updateReel(reelId, {
-            direct_video_url: scrapedInfo.videoUrl,
-            // Guardar a legenda da FONTE em original_caption (caption fica vazio p/ a IA reescrever)
-            ...(!reel!.original_caption && scrapedInfo.caption
-              ? { hashtags: scrapedInfo.hashtags.join(' '), original_caption: scrapedInfo.caption }
-              : {}),
-          });
-          reel = getReelById(reelId)!;
-          console.log(`🌐 [Bright Data] URL direta obtida com sucesso para reel #${reelId}`);
-          return scrapedInfo.videoUrl;
-        } catch (scrapeErr) {
-          brightDataError = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr);
-          console.warn(`⚠️ [Bright Data] Reel #${reelId}: não foi possível obter o vídeo — ${brightDataError}`);
-          return undefined;
-        }
-      };
-
-      // 1ª tentativa: URL direta salva na descoberta; sem ela (reel manual), busca na Bright Data
-      let directUrl = reel!.direct_video_url ?? undefined;
-      const directUrlFromDiscovery = !!directUrl;
-      if (!directUrl && canUseBrightData) {
-        console.log(`🌐 [Bright Data] Buscando URL direta para reel #${reelId}...`);
-        directUrl = await refreshDirectUrl();
-      }
-
-      if (directUrl) {
-        // Download por URL direta — sem cookies, sem bloqueio de VPS
-        try {
-          filePath = await downloadFromDirectUrl(directUrl, DOWNLOADS_DIR, reelIdForFile);
-        } catch (directErr) {
-          // As URLs do CDN do Instagram expiram: se a salva na descoberta falhou, busca uma nova e tenta de novo
-          if (!directUrlFromDiscovery || !canUseBrightData) throw directErr;
-          console.warn(`⚠️ Reel #${reelId}: URL direta falhou (provavelmente expirou) — buscando uma nova na Bright Data...`);
-          const freshUrl = await refreshDirectUrl();
-          if (!freshUrl) {
-            throw new Error(`URL direta do vídeo expirou e a Bright Data não devolveu uma nova: ${brightDataError}`);
-          }
-          filePath = await downloadFromDirectUrl(freshUrl, DOWNLOADS_DIR, reelIdForFile);
-        }
-        metadata = { title: '', description: reel!.original_caption || reel!.caption || '', duration: 0 };
-      } else if (isInstagramUrl && !hasCookiesConfigured()) {
-        // Sem cookies o yt-dlp é sempre bloqueado no Instagram a partir do IP da VPS — nem tenta
-        throw new Error(
-          brightDataError
-            ? `Vídeo indisponível na Bright Data: ${brightDataError}.`
-            : 'Instagram exige a Bright Data (BRIGHTDATA_API_TOKEN) ou cookies para o yt-dlp — sem isso o IP da VPS é bloqueado.'
-        );
-      } else {
-        // Último recurso: yt-dlp (TikTok, YouTube, Facebook, ou Instagram com cookies)
-        console.log(`⚠️ Reel #${reelId}: usando yt-dlp (fallback)`);
-        const result = await downloadReel(reel!.instagram_url, DOWNLOADS_DIR);
-        filePath = result.filePath;
-        metadata = result.metadata;
-      }
-
-      const originalCaption = metadata.description || metadata.title || reel!.original_caption || reel!.caption || '';
-
-      // A IA reescreve a legenda da fonte. Só preserva se o usuário tiver definido uma legenda custom.
-      let finalCaption = reel!.caption;
-      if (!finalCaption) {
-        finalCaption = await rewriteCaption(originalCaption, reel!.hashtags);
-      } else {
-        finalCaption = ensureMinimumHashtags(finalCaption, reel!.hashtags, 6);
-      }
-
-      updateReel(reelId, {
-        local_path: filePath,
-        duration_seconds: metadata.duration || 0,
-        original_caption: originalCaption,
-        caption: finalCaption,
-        stage: 'downloaded',
-      });
-
-      return `Download concluído: ${path.basename(filePath)} (${metadata.duration || 0}s)`;
-    });
-
-    results.push(downloadResult);
-
-    if (!downloadResult.success) {
-      updateReelStage(reelId, 'error', downloadResult.message);
-      console.log(`❌ Reel #${reelId} falhou no download: ${downloadResult.message}`);
-      return results;
-    }
-
-    // Recarregar reel atualizado
-    reel = getReelById(reelId)!;
-  }
-
-  // ── Etapa 2: Processamento (adicionar logo) ──
-  if (reel.stage === 'downloaded' || reel.stage === 'processing') {
-    const processResult = await measureStage(reelId, 'processing', async () => {
-      updateReelStage(reelId, 'processing');
-
-      const outputFilename = `processed_${reelId}_${Date.now()}.mp4`;
-      const outputPath = path.join(PROCESSED_DIR, outputFilename);
-
-      // Marca d'água do dono do reel (null = conta sem logo: publica sem marca d'água)
-      const activeLogoPath = getUserLogoPath(reel!.user_id);
-
-      if (activeLogoPath) {
-        await addLogoToVideo(
-          reel!.local_path!,
-          activeLogoPath,
-          outputPath,
-          settings.logo_position,
-          settings.logo_scale
-        );
-      } else {
-        console.log(`🎬 Usuário #${reel!.user_id} sem marca d'água — vídeo segue sem logo`);
-        fs.copyFileSync(reel!.local_path!, outputPath);
-      }
-
-      updateReel(reelId, {
-        processed_path: outputPath,
-        stage: 'processed',
-      });
-
-      return `Processamento concluído: ${outputFilename}`;
-    });
-
-    results.push(processResult);
-
-    if (!processResult.success) {
-      updateReelStage(reelId, 'error', processResult.message);
-      console.log(`❌ Reel #${reelId} falhou no processamento: ${processResult.message}`);
-      return results;
-    }
-
-    reel = getReelById(reelId)!;
-  }
-
-  // ── Etapa 3: Upload para R2 ──
-  if (reel.stage === 'processed' || reel.stage === 'uploading') {
-    const uploadResult = await measureStage(reelId, 'uploading', async () => {
-      updateReelStage(reelId, 'uploading');
-
-      const r2Key = generateR2Key(reelId, reel!.source_username);
-      const r2Url = await uploadVideo(reel!.processed_path!, r2Key);
-
-      // Limpeza de arquivos locais para liberar espaço em disco na VPS após upload seguro no R2
-      try {
-        if (reel!.local_path && fs.existsSync(reel!.local_path)) {
-          fs.unlinkSync(reel!.local_path);
-          console.log(`🧹 [Cleanup] Vídeo original local removido após upload R2: ${path.basename(reel!.local_path)}`);
-        }
-        if (reel!.processed_path && fs.existsSync(reel!.processed_path)) {
-          fs.unlinkSync(reel!.processed_path);
-          console.log(`🧹 [Cleanup] Vídeo processado local removido após upload R2: ${path.basename(reel!.processed_path)}`);
-        }
-      } catch (cleanupErr) {
-        console.warn(`⚠️ [Cleanup] Erro ao limpar arquivos locais de Reel #${reelId}:`, cleanupErr);
-      }
-
-      updateReel(reelId, {
-        r2_url: r2Url,
-        stage: 'uploaded',
-      });
-
-      return `Upload concluído: ${r2Url}`;
-    });
-
-    results.push(uploadResult);
-
-    if (!uploadResult.success) {
-      updateReelStage(reelId, 'error', uploadResult.message);
-      console.log(`❌ Reel #${reelId} falhou no upload: ${uploadResult.message}`);
-      return results;
-    }
-
-    reel = getReelById(reelId)!;
-  }
-
-  // ── Etapa 4: Publicação no Instagram + Facebook ──
-  if (reel.stage === 'uploaded' || reel.stage === 'publishing') {
-    // Verificar limite do plano gratuito
-    const user = getUserById(reel.user_id);
-    if (user && user.plan === 'free') {
-      const publishedCount = getPublishedTotalCount(reel.user_id);
-      if (publishedCount >= 1) {
-        const errorMsg = "Limite do plano gratuito atingido (máximo 1 publicação). Por favor, atualize seu plano.";
-        updateReelStage(reelId, 'error', errorMsg);
-        console.log(`❌ [Plano Grátis] Reel #${reelId} bloqueado: ${errorMsg}`);
-        return [
-          {
-            reel_id: reelId,
-            stage: 'publishing',
-            success: false,
-            message: errorMsg,
-            duration_ms: 0,
-          }
-        ];
-      }
-    }
-
-    const publishResult = await measureStage(reelId, 'publishing', async () => {
-      updateReelStage(reelId, 'publishing');
-
-      const caption = buildCaption(reel!.caption, reel!.hashtags, settings.custom_caption_template);
-      const publishMessages: string[] = [];
-      // Somente a página que o dono do reel conectou (o .env vale só para o administrador)
-      const credentials = getPublishCredentials(reel!.user_id, settings);
-
-      if (!credentials.pageToken) {
-        throw new Error('Nenhuma página do Facebook conectada. Conecte em Configurações → Facebook.');
-      }
-
-      // Publicar no Instagram (usando credenciais do usuário)
-      if (settings.instagram_enabled && !credentials.igAccountId) {
-        publishMessages.push('IG: a página conectada não tem conta do Instagram Business vinculada');
-      } else if (settings.instagram_enabled) {
-        try {
-          const { mediaId } = await publishToInstagram(
-            reel!.r2_url!,
-            caption,
-            credentials.pageToken,
-            credentials.igAccountId
-          );
-          updateReel(reelId, { ig_post_id: mediaId });
-          publishMessages.push(`IG: ${mediaId}`);
-        } catch (igError) {
-          const igMsg = igError instanceof Error ? igError.message : String(igError);
-          console.error(`❌ Falha na publicação IG do Reel #${reelId}: ${igMsg}`);
-          publishMessages.push(`IG: FALHA - ${igMsg}`);
-        }
-      }
-
-      // Publicar no Facebook (usando credenciais do usuário)
-      if (settings.facebook_enabled && !credentials.pageId) {
-        publishMessages.push('FB: nenhuma página do Facebook conectada');
-      } else if (settings.facebook_enabled) {
-        try {
-          const fbPostId = await publishReelToPage(
-            reel!.r2_url!,
-            caption,
-            credentials.pageToken,
-            credentials.pageId
-          );
-          updateReel(reelId, { fb_post_id: fbPostId });
-          publishMessages.push(`FB: ${fbPostId}`);
-        } catch (fbError) {
-          const fbMsg = fbError instanceof Error ? fbError.message : String(fbError);
-          console.error(`❌ Falha na publicação FB do Reel #${reelId}: ${fbMsg}`);
-          publishMessages.push(`FB: FALHA - ${fbMsg}`);
-        }
-      }
-
-      // Verificar se pelo menos uma publicação teve sucesso
-      const reelUpdated = getReelById(reelId)!;
-      if (reelUpdated.ig_post_id || reelUpdated.fb_post_id) {
-        updateReel(reelId, {
-          stage: 'published',
-          published_at: new Date().toISOString(),
-        });
-        removeLocalVideoFiles(reelUpdated);
-        return `Publicação concluída: ${publishMessages.join(' | ')}`;
-      } else {
-        throw new Error(
-          publishMessages.length > 0
-            ? `Nenhuma plataforma publicou com sucesso: ${publishMessages.join(' | ')}`
-            : 'Nenhuma plataforma publicou: Instagram e Facebook estão desativados nas Configurações.'
-        );
-      }
-    });
-
-    results.push(publishResult);
-
-    if (!publishResult.success) {
-      updateReelStage(reelId, 'error', publishResult.message);
-      console.log(`❌ Reel #${reelId} falhou na publicação: ${publishResult.message}`);
-      return results;
-    }
-  }
-
-  console.log(`✅ Reel #${reelId} processado com sucesso!`);
-  return results;
-}
-
-/**
- * Executa o pipeline para um usuário específico.
- */
-async function runPipelineForUser(user: User, forceDiscovery: boolean): Promise<void> {
-  const settings = getAppSettings(user.id);
-  const maxReels = settings.max_reels_per_run;
-  const discoveryLimit = settings.discovery_limit;
-
-  // Sem página conectada não há onde publicar: nem descobre (gastaria crédito da Bright Data)
-  // nem processa. Comum em contas novas que ainda não escolheram a página.
-  if (!hasPublishDestination(getPublishCredentials(user.id, settings))) {
-    console.log(`⏭️ [Usuário #${user.id}] Nenhuma página do Facebook conectada — pulando o usuário até ele conectar nas Configurações.`);
-    return;
-  }
-
-  // Fase 1: Descobrir novos reels
-  console.log(`\n📥 [Usuário #${user.id}] ── Fase de Descoberta ──`);
-  const activeSources = getActiveSources(user.id);
-
-  if (activeSources.length === 0) {
-    console.log(`📥 [Usuário #${user.id}] Nenhum perfil-fonte ativo. Pulando descoberta.`);
-  } else {
-    console.log(`📥 [Usuário #${user.id}] ${activeSources.length} perfis-fonte ativos`);
-
-    let totalDiscovered = 0;
-
-    for (const source of activeSources) {
-      if (source.username === 'manual') continue;
-
-      const platform = (source as any).platform || 'instagram';
-
-      // ── Bright Data: recolher coleta disparada antes (uma consulta, sem esperar) ──
-      if (platform === 'instagram' && isBrightDataConfigured() && source.pending_snapshot_id) {
-        const result = await collectPendingDiscovery(source, user.id, discoveryLimit);
-        if (result.status === 'done') totalDiscovered += result.newReelIds.length;
-        continue;
-      }
-
-      // Limitar a frequência de descoberta automática (economiza crédito da Bright Data).
-      // Configurável via discovery_interval_minutes (padrão 6h) — independente do ciclo do cron.
-      if (!forceDiscovery && source.last_checked_at) {
-        try {
-          const lastCheckedISO = source.last_checked_at.replace(' ', 'T') + 'Z';
-          const lastCheckedTime = new Date(lastCheckedISO).getTime();
-          const diffMinutes = (Date.now() - lastCheckedTime) / (1000 * 60);
-          if (diffMinutes < settings.discovery_interval_minutes) {
-            console.log(`📥 [Usuário #${user.id}] @${source.username}: Descoberta pulada (última há ${diffMinutes.toFixed(1)} min, intervalo: ${settings.discovery_interval_minutes} min)`);
-            continue;
-          }
-        } catch (err) {
-          // Prossegue se houver erro ao converter a data
-        }
-      }
-
-      try {
-        console.log(`📥 [Usuário #${user.id}] Descobrindo de ${platform}: @${source.username}...`);
-
-        // ── Instagram: disparar coleta na Bright Data e seguir — o resultado é recolhido no próximo ciclo ──
-        if (platform === 'instagram' && isBrightDataConfigured()) {
-          const snapshotId = await startReelsDiscovery(source.username, discoveryLimit);
-          setSourcePendingSnapshot(source.id, snapshotId);
-          continue; // Próximo source
-        }
-
-        // ── Instagram sem Bright Data: pular para não tomar HTTP 429 do IP do VPS ──
-        if (platform === 'instagram' && !isBrightDataConfigured()) {
-          console.warn(
-            `⚠️ [Usuário #${user.id}] @${source.username}: descoberta do Instagram ignorada — configure BRIGHTDATA_API_TOKEN (yt-dlp é bloqueado com HTTP 429 em IPs de VPS).`
-          );
-          updateSourceLastChecked(source.id);
-          continue;
-        }
-
-        // ── Outras plataformas (TikTok, YouTube, Facebook) ──
-        const urls = await discoverReels(source.username, platform, discoveryLimit);
-
-        let newCount = 0;
-        for (const url of urls) {
-          // Verificar se já existe no banco para esse usuário
-          const existing = getReelByUrl(url, user.id);
-          if (existing) {
-            continue;
-          }
-
-          // Extrair ID do vídeo
-          const videoId = extractVideoId(url, platform);
-
-          // Criar registro no banco (null = já existia com outro formato de URL)
-          const created = createReel({
-            source_id: source.id,
-            source_username: source.username,
-            instagram_url: url,
-            instagram_id: videoId || undefined,
-            user_id: user.id
-          });
-          if (!created) continue;
-
-          newCount++;
-          totalDiscovered++;
-        }
-
-        updateSourceLastChecked(source.id);
-        console.log(`📥 [Usuário #${user.id}] @${source.username}: ${newCount} novos reels (${urls.length} total encontrados)`);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error(`❌ [Usuário #${user.id}] Erro ao descobrir reels de @${source.username}: ${msg}`);
-      }
-    }
-
-    console.log(`📥 [Usuário #${user.id}] Total de novos reels descobertos: ${totalDiscovered}`);
-  }
-
-  // Fase 2: Processar e publicar reels pendentes (com trava de ritmo de postagem)
-  console.log(`\n🔄 [Usuário #${user.id}] ── Fase de Processamento ──`);
-
-  // Se a publicação automática estiver desligada, apenas descobrimos (Fase 1) e paramos aqui.
-  if (!settings.auto_publish) {
-    console.log(`🔄 [Usuário #${user.id}] Publicação automática desligada — apenas descoberta nesta execução.`);
-    return;
-  }
-
-  // ── Trava de intervalo entre publicações ──
-  // Garante "no máximo 1 publicação a cada N minutos", independente da frequência do cron.
-  const intervalMs = settings.publish_interval_minutes * 60 * 1000;
-  const lastPublishedAt = getLastPublishedAt(user.id);
-  if (intervalMs > 0 && lastPublishedAt) {
-    const elapsedMs = Date.now() - new Date(lastPublishedAt).getTime();
-    if (elapsedMs < intervalMs) {
-      const restanteMin = ((intervalMs - elapsedMs) / 60000).toFixed(1);
-      console.log(
-        `⏸️ [Usuário #${user.id}] Trava de publicação ativa — última postagem há ${(elapsedMs / 60000).toFixed(1)} min. ` +
-          `Aguardando mais ${restanteMin} min (intervalo: ${settings.publish_interval_minutes} min).`
+async function collect(job: Job, q: JobQueue, settings: AppSettings) {
+  const source = db.getSourceById(job.ref_id, job.user_id);
+  if (!source) return;
+  const payload = JSON.parse(job.payload);
+  const snapshot = payload.snapshot || source.pending_snapshot_id;
+  if (!snapshot) return;
+  const platform = source.platform === "facebook" ? "facebook" : "instagram";
+  const items = await collectProfileDiscovery(
+    snapshot,
+    source.username,
+    platform,
+    settings.discovery_limit,
+  );
+  if (!items) {
+    const start =
+      payload.started ||
+      Date.parse((source.pending_snapshot_at || "").replace(" ", "T") + "Z") ||
+      job.created_at;
+    if (Date.now() - start > 30 * 60_000)
+      throw new PipelineError(
+        "Coleta excedeu 30 minutos; confira a Bright Data.",
+        "failed",
+        "snapshot_timeout",
       );
-      return;
-    }
+    throw new Wait(Date.now() + 15_000);
   }
-
-  // Buscar reels pendentes (mais antigos primeiro), em ordem de estágio do pipeline
-  const pendingStages: ReelStage[] = [
-    'discovered',
-    'downloading',
-    'downloaded',
-    'processing',
-    'processed',
-    'uploading',
-    'uploaded',
-    'publishing',
-  ];
-
-  // Limitamos o número de TENTATIVAS por execução (proteção contra muitos reels quebrados).
-  // A publicação em si é limitada a 1 pela trava de tempo (ao publicar, atualizamos lastPublishedAt
-  // e a verificação abaixo interrompe o laço).
-  const maxAttempts = Math.max(1, maxReels);
-  const pendingReels: { id: number; stage: ReelStage }[] = [];
-  for (const stage of pendingStages) {
-    const reels = getReelsByStage(user.id, stage, maxAttempts - pendingReels.length);
-    for (const reel of reels) {
-      if (pendingReels.length >= maxAttempts) break;
-      pendingReels.push({ id: reel.id, stage: reel.stage });
+  q.assertOwned(job);
+  q.db.transaction(() => {
+    for (const item of items) {
+      const reel = db.createReel({
+        source_id: source.id,
+        source_username: source.username,
+        user_id: job.user_id,
+        instagram_url: item.url,
+        instagram_id: item.id,
+        original_caption: item.caption,
+        hashtags: item.hashtags.join(" "),
+        direct_video_url: item.videoUrl,
+      });
+      if (reel && settings.auto_publish)
+        enqueueReel(job.user_id, reel.id, false, q);
     }
-    if (pendingReels.length >= maxAttempts) break;
-  }
+    db.clearSourcePendingSnapshotIf(source.id, snapshot);
+    db.updateSourceLastChecked(source.id);
+  })();
+}
 
-  if (pendingReels.length === 0) {
-    console.log(`🔄 [Usuário #${user.id}] Nenhum reel pendente para processar.`);
+function reserveWindow(job: Job, q: JobQueue, settings: AppSettings): number {
+  return q.db
+    .transaction(() => {
+      q.assertOwned(job);
+      const row = q.db
+        .prepare(
+          "SELECT reel_id,until_at FROM pipeline_windows WHERE user_id=?",
+        )
+        .get(job.user_id) as { reel_id: number; until_at: number } | undefined;
+      if (row && row.reel_id !== job.ref_id && row.until_at > Date.now())
+        return row.until_at;
+      if (!row || row.reel_id !== job.ref_id) {
+        const last = db.getLastPublishedAt(job.user_id);
+        const at = last
+          ? Date.parse(last) + settings.publish_interval_minutes * 60_000
+          : 0;
+        if (at > Date.now()) return at;
+        q.db
+          .prepare(
+            "INSERT INTO pipeline_windows VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET reel_id=excluded.reel_id,until_at=excluded.until_at",
+          )
+          .run(
+            job.user_id,
+            job.ref_id,
+            Date.now() + settings.publish_interval_minutes * 60_000,
+          );
+      }
+      return 0;
+    })
+    .immediate();
+}
+
+function completeReel(reel: Reel, settings: AppSettings) {
+  const complete =
+    (!settings.instagram_enabled || !!reel.ig_post_id) &&
+    (!settings.facebook_enabled || !!reel.fb_post_id);
+  if (complete) {
+    db.updateReel(reel.id, { stage: "published" }, reel.user_id);
+    for (const file of [reel.local_path, reel.processed_path]) {
+      if (
+        file &&
+        path.resolve(file).startsWith(DATA_DIR + path.sep) &&
+        !db.isVideoFileUsedByPendingReel(file, reel.id)
+      )
+        fs.rmSync(file, { force: true });
+    }
+    db.updateReel(
+      reel.id,
+      { local_path: null, processed_path: null },
+      reel.user_id,
+    );
+  }
+}
+
+async function publish(
+  job: Job,
+  q: JobQueue,
+  settings: AppSettings,
+  signal?: AbortSignal,
+) {
+  const target = JSON.parse(job.payload).target as "instagram" | "facebook";
+  const reel = db.getReelById(job.ref_id, job.user_id);
+  if (!reel) throw new PipelineError("Reel removido.", "failed", "not_found");
+  const knownId = target === "instagram" ? reel.ig_post_id : reel.fb_post_id;
+  if (knownId) {
+    q.assertOwned(job);
+    completeReel(reel, settings);
     return;
   }
-
-  console.log(
-    `🔄 [Usuário #${user.id}] ${pendingReels.length} reel(s) candidato(s); publicando no máximo 1 (intervalo: ${settings.publish_interval_minutes} min)`
-  );
-
-  let publishedCount = 0;
-  let errorCount = 0;
-
-  for (const pending of pendingReels) {
-    // Já publicou 1 nesta execução? Para — o limite é 1 por janela de tempo.
-    if (publishedCount >= 1) break;
-
-    try {
-      const results = await processReel(pending.id);
-      const hasError = results.some((r) => !r.success);
-      const publicou = results.some((r) => r.stage === 'publishing' && r.success);
-
-      if (publicou) publishedCount++;
-      if (hasError) errorCount++;
-
-      // Log detalhado dos resultados
-      for (const result of results) {
-        const icon = result.success ? '✅' : '❌';
-        console.log(
-          `  ${icon} Reel #${result.reel_id} [${result.stage}]: ` +
-            `${result.message} (${result.duration_ms}ms)`
-        );
-      }
-    } catch (error) {
-      errorCount++;
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error(`❌ [Usuário #${user.id}] Erro inesperado ao processar Reel #${pending.id}: ${msg}`);
-      updateReelStage(pending.id, 'error', msg);
-    }
-  }
-
-  console.log(
-    `\n🔄 [Usuário #${user.id}] Processamento concluído: ${publishedCount} publicado(s), ${errorCount} erro(s)`
-  );
+  const credentials = destination(job.user_id, settings);
+  if (!settings.auto_publish && !JSON.parse(job.payload).manual)
+    throw new PipelineError(
+      "Publicação automática desligada.",
+      "blocked",
+      "disabled",
+    );
+  if (!["instagram", "facebook"].includes(target))
+    throw new PipelineError("Destino inválido.", "failed", "invalid_target");
+  if (!settings[`${target}_enabled`])
+    throw new PipelineError(
+      "Destino desativado nas Configurações.",
+      "blocked",
+      "disabled",
+    );
+  if (target === "instagram" && !credentials.igAccountId)
+    throw new PipelineError(
+      "Vincule um Instagram Business à página selecionada.",
+      "blocked",
+      "credentials",
+    );
+  if (target === "facebook" && !credentials.pageId)
+    throw new PipelineError(
+      "Selecione uma página do Facebook.",
+      "blocked",
+      "credentials",
+    );
+  if (!reel.r2_url)
+    throw new PipelineError(
+      "Prepare o vídeo antes de publicar.",
+      "blocked",
+      "media",
+    );
+  const user = db.getUserById(job.user_id);
+  if (
+    user?.plan === "free" &&
+    !reel.ig_post_id &&
+    !reel.fb_post_id &&
+    db.getPublishedTotalCount(job.user_id) >= 1
+  )
+    throw new PipelineError(
+      "Limite do plano gratuito atingido.",
+      "blocked",
+      "plan_limit",
+    );
+  const until = reserveWindow(job, q, settings);
+  if (until) throw new Wait(until);
+  q.assertOwned(job);
+  db.updateReel(job.ref_id, { stage: "publishing" }, job.user_id);
+  const result = await publishStep({
+    db: q.db,
+    userId: job.user_id,
+    reelId: job.ref_id,
+    target,
+    token: credentials.pageToken!,
+    accountId: credentials.igAccountId,
+    pageId: credentials.pageId,
+    videoUrl: reel.r2_url,
+    caption: buildCaption(
+      reel.caption,
+      reel.hashtags,
+      settings.custom_caption_template,
+    ),
+    assertOwned: () => q.assertOwned(job),
+    signal,
+  });
+  if (!result.done) throw new Wait(Date.now() + 15_000);
+  q.assertOwned(job);
+  const updated = db.updateReel(
+    job.ref_id,
+    {
+      [target === "instagram" ? "ig_post_id" : "fb_post_id"]: result.postId,
+      published_at: reel.published_at || new Date().toISOString(),
+      error_message: null,
+    },
+    job.user_id,
+  )!;
+  completeReel(updated, settings);
 }
 
-/**
- * Executa o pipeline completo:
- * 1. Descobre novos reels de todos os perfis-fonte ativos
- * 2. Processa cada reel pelo pipeline
- *
- * Se specificUserId for fornecido, executa apenas para esse usuário.
- * Caso contrário, executa para todos os usuários cadastrados no banco.
- */
-export async function runPipeline(forceDiscovery = false, specificUserId?: number): Promise<void> {
-  console.log('\n🚀 ===== Iniciando Pipeline Geral =====');
-  console.log(`⏰ ${new Date().toISOString()}`);
-  const startTime = Date.now();
-
+export async function executeJob(
+  job: Job,
+  q: JobQueue,
+  signal?: AbortSignal,
+  overrides: Partial<PipelineAdapters> = {},
+): Promise<void> {
   try {
-    // Inicializar banco de dados
-    initDatabase();
-    ensureDirectories();
-
-    const users = specificUserId
-      ? ([getUserById(specificUserId)].filter(Boolean) as User[])
-      : getAllUsers();
-
-    if (users.length === 0) {
-      console.log('🚀 Nenhum usuário cadastrado no sistema.');
+    const settings = db.getAppSettings(job.user_id);
+    if (!db.getUserById(job.user_id)) {
+      q.finish(job);
       return;
     }
-
-    console.log(`🚀 Executando pipeline para ${users.length} usuário(s)...`);
-
-    for (const user of users) {
-      console.log(`\n👤 ==============================================================`);
-      console.log(`👤 USUÁRIO #${user.id}: ${user.email} (${user.name})`);
-      console.log(`👤 ==============================================================`);
-      try {
-        await runPipelineForUser(user, forceDiscovery);
-      } catch (userError) {
-        console.error(`❌ Erro no pipeline do Usuário #${user.id} (${user.email}):`, userError);
-      }
-    }
-
-    const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n🚀 ===== Pipeline Geral Concluído em ${totalTime}s =====\n`);
+    if (job.kind === "discover") await discover(job, q, settings, signal);
+    else if (job.kind === "collect") await collect(job, q, settings);
+    else if (job.kind === "prepare")
+      await prepare(job, q, settings, signal, {
+        ...defaultAdapters,
+        ...overrides,
+      });
+    else await publish(job, q, settings, signal);
+    q.finish(job);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error(`❌ Erro fatal no pipeline geral: ${msg}`);
-    throw error;
+    q.assertOwned(job);
+    if (error instanceof Wait) {
+      q.defer(job, error.when);
+      return;
+    }
+    const failure =
+      error instanceof PipelineError
+        ? error
+        : new PipelineError(
+            safeError(error),
+            /token.*(inválid|expired)|401|403/i.test(String(error))
+              ? "blocked"
+              : "retry_wait",
+          );
+    const backoff = Math.min(
+      30 * 60_000,
+      Math.max(failure.retryAfterMs, 15_000 * 2 ** job.attempts) +
+        Math.floor(Math.random() * 1000),
+    );
+    q.fail(
+      job,
+      failure.code,
+      failure.message,
+      failure.disposition,
+      Date.now() + backoff,
+    );
+    if (job.kind === "prepare" || job.kind === "publish")
+      db.updateReel(
+        job.ref_id,
+        {
+          error_message: failure.message,
+          stage:
+            failure.disposition === "needs_review" ? "publishing" : "error",
+        },
+        job.user_id,
+      );
   }
 }
 
-/**
- * Monta a legenda final para publicação a partir do template e dados do reel,
- * garantindo no mínimo 6 hashtags relacionadas.
- */
-export function buildCaption(caption: string, hashtags: string, template: string): string {
-  let result = '';
-  if (template) {
-    result = template
-      .replace('{caption}', caption || '')
-      .replace('{hashtags}', hashtags || '')
-      .trim();
-  } else {
-    const parts: string[] = [];
-    if (caption) parts.push(caption);
-    // Só anexa as hashtags da fonte se a legenda (ex: reescrita pela IA) ainda não tiver hashtags
-    if (hashtags && !caption.includes('#')) parts.push(hashtags);
-    result = parts.join('\n\n');
-  }
-
-  return ensureMinimumHashtags(result, hashtags, 6);
+/** Import legacy work without automatically resending ambiguous historical publications. */
+export function importLegacyJobs(q = getQueue()): void {
+  if (q.state("legacy_imported") === "true") return;
+  q.db.transaction(() => {
+    const reels = q.db
+      .prepare("SELECT * FROM reels WHERE stage!='published'")
+      .all() as Reel[];
+    for (const reel of reels) {
+      const job = q.enqueue(reel.user_id, "prepare", reel.id);
+      if (reel.stage === "error" || reel.stage === "publishing") {
+        q.db
+          .prepare(
+            "UPDATE pipeline_jobs SET status=?,error_code='legacy',error_message=? WHERE id=?",
+          )
+          .run(
+            reel.stage === "publishing" ? "needs_review" : "blocked",
+            reel.error_message ||
+              "Confira o estado antigo antes de reprocessar.",
+            job.id,
+          );
+      }
+    }
+    q.setState("legacy_imported", "true");
+  })();
 }

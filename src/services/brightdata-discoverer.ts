@@ -1,3 +1,17 @@
+type BrightDataRecord = Record<string, unknown> & {
+  error?: string;
+  warning?: string;
+  video_url?: string;
+  videoUrl?: string;
+  shortcode?: string;
+  post_id?: string;
+  content_id?: string;
+  url?: string;
+  description?: string;
+  caption?: string;
+  date_posted?: string;
+  user_posted?: string;
+};
 /**
  * Integração com a Bright Data (Web Scraper API — dataset de Instagram Reels).
  *
@@ -10,10 +24,11 @@
  */
 
 /** API da Bright Data (sobrescrevível para testes locais com um servidor simulado) */
-const BRIGHTDATA_API = process.env.BRIGHTDATA_API_URL || 'https://api.brightdata.com';
+const BRIGHTDATA_API =
+  process.env.BRIGHTDATA_API_URL || "https://api.brightdata.com";
 
 /** Dataset oficial de Instagram Reels (sobrescrevível por env) */
-const DEFAULT_REELS_DATASET = 'gd_lyclm20il4r5helnj';
+const DEFAULT_REELS_DATASET = "gd_lyclm20il4r5helnj";
 
 /** Informações de um reel descoberto via Bright Data */
 export interface BrightDataReelInfo {
@@ -31,14 +46,17 @@ export interface BrightDataReelInfo {
 
 /** Token da API (Bright Data → Settings → API tokens) */
 function getToken(): string | undefined {
-  const token = process.env.BRIGHTDATA_API_TOKEN || process.env.BRIGHTDATA_TOKEN;
-  return token && token.trim() !== '' ? token.trim() : undefined;
+  const token =
+    process.env.BRIGHTDATA_API_TOKEN || process.env.BRIGHTDATA_TOKEN;
+  return token && token.trim() !== "" ? token.trim() : undefined;
 }
 
 /** Dataset de reels em uso */
 function getReelsDataset(): string {
   const dataset = process.env.BRIGHTDATA_REELS_DATASET;
-  return dataset && dataset.trim() !== '' ? dataset.trim() : DEFAULT_REELS_DATASET;
+  return dataset && dataset.trim() !== ""
+    ? dataset.trim()
+    : DEFAULT_REELS_DATASET;
 }
 
 /** Verifica se a integração Bright Data está configurada */
@@ -55,7 +73,7 @@ function getSnapshotTimeoutMs(fallback: number): number {
 /** Erros de autenticação/HTTP traduzidos para mensagens acionáveis */
 function describeHttpError(status: number, body: string): string {
   if (status === 401 || status === 403) {
-    return 'BRIGHTDATA_API_TOKEN inválido ou sem permissão. Verifique o token na sua conta Bright Data.';
+    return "BRIGHTDATA_API_TOKEN inválido ou sem permissão. Verifique o token na sua conta Bright Data.";
   }
   if (status === 400) {
     return `Requisição rejeitada pela Bright Data (400). Verifique o dataset e a URL enviada. Detalhe: ${body.slice(0, 200)}`;
@@ -70,18 +88,20 @@ function describeHttpError(status: number, body: string): string {
 async function brightDataFetch(
   pathAndQuery: string,
   init: RequestInit = {},
-  timeoutMs = 60000
+  timeoutMs = 60000,
 ): Promise<Response> {
   const token = getToken();
   if (!token) {
-    throw new Error('BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env');
+    throw new Error(
+      "BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env",
+    );
   }
 
   return fetch(`${BRIGHTDATA_API}${pathAndQuery}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...(init.headers || {}),
     },
     signal: AbortSignal.timeout(timeoutMs),
@@ -94,19 +114,29 @@ async function brightDataFetch(
  * @param query Query string do /trigger (dataset_id, type, discover_by, ...)
  * @param input Corpo da coleta (array de entradas)
  */
-async function triggerCollection(query: string, input: Record<string, unknown>[]): Promise<string> {
+async function triggerCollection(
+  query: string,
+  input: Record<string, unknown>[],
+): Promise<string> {
   const triggerRes = await brightDataFetch(`/datasets/v3/trigger?${query}`, {
-    method: 'POST',
+    method: "POST",
     body: JSON.stringify(input),
   });
 
   if (!triggerRes.ok) {
-    throw new Error(describeHttpError(triggerRes.status, await triggerRes.text()));
+    throw new Error(
+      describeHttpError(triggerRes.status, await triggerRes.text()),
+    );
   }
 
-  const trigger = (await triggerRes.json()) as { snapshot_id?: string; error?: string };
+  const trigger = (await triggerRes.json()) as {
+    snapshot_id?: string;
+    error?: string;
+  };
   if (!trigger.snapshot_id) {
-    throw new Error(`Bright Data não retornou snapshot_id${trigger.error ? `: ${trigger.error}` : ''}`);
+    throw new Error(
+      `Bright Data não retornou snapshot_id${trigger.error ? `: ${trigger.error}` : ""}`,
+    );
   }
 
   return trigger.snapshot_id;
@@ -118,28 +148,44 @@ async function triggerCollection(query: string, input: Record<string, unknown>[]
  * @returns Os registros, se o snapshot estiver pronto; null se ainda estiver em andamento
  * @throws Se a coleta falhou ou foi cancelada
  */
-async function checkCollection(snapshotId: string): Promise<Record<string, any>[] | null> {
-  const progressRes = await brightDataFetch(`/datasets/v3/progress/${snapshotId}`, {}, 30000);
+async function checkCollection(
+  snapshotId: string,
+): Promise<BrightDataRecord[] | null> {
+  const progressRes = await brightDataFetch(
+    `/datasets/v3/progress/${snapshotId}`,
+    {},
+    30000,
+  );
   if (!progressRes.ok) {
-    throw new Error(describeHttpError(progressRes.status, await progressRes.text()));
+    throw new Error(
+      describeHttpError(progressRes.status, await progressRes.text()),
+    );
   }
 
   const progress = (await progressRes.json()) as { status?: string };
 
-  if (progress.status === 'failed' || progress.status === 'canceled') {
-    throw new Error(`Coleta da Bright Data terminou com status "${progress.status}".`);
+  if (progress.status === "failed" || progress.status === "canceled") {
+    throw new Error(
+      `Coleta da Bright Data terminou com status "${progress.status}".`,
+    );
   }
-  if (progress.status !== 'ready') {
+  if (progress.status !== "ready") {
     return null;
   }
 
-  const snapshotRes = await brightDataFetch(`/datasets/v3/snapshot/${snapshotId}?format=json`, {}, 120000);
+  const snapshotRes = await brightDataFetch(
+    `/datasets/v3/snapshot/${snapshotId}?format=json`,
+    {},
+    120000,
+  );
   if (!snapshotRes.ok) {
-    throw new Error(describeHttpError(snapshotRes.status, await snapshotRes.text()));
+    throw new Error(
+      describeHttpError(snapshotRes.status, await snapshotRes.text()),
+    );
   }
 
   const data = await snapshotRes.json();
-  return Array.isArray(data) ? (data as Record<string, any>[]) : [];
+  return Array.isArray(data) ? (data as BrightDataRecord[]) : [];
 }
 
 /**
@@ -153,10 +199,12 @@ async function checkCollection(snapshotId: string): Promise<Record<string, any>[
 async function runCollection(
   query: string,
   input: Record<string, unknown>[],
-  timeoutMs: number
-): Promise<Record<string, any>[]> {
+  timeoutMs: number,
+): Promise<BrightDataRecord[]> {
   const snapshotId = await triggerCollection(query, input);
-  console.log(`🌐 [Bright Data] Coleta iniciada (snapshot ${snapshotId}), aguardando...`);
+  console.log(
+    `🌐 [Bright Data] Coleta iniciada (snapshot ${snapshotId}), aguardando...`,
+  );
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -166,7 +214,7 @@ async function runCollection(
   }
 
   throw new Error(
-    `Timeout aguardando a coleta da Bright Data (snapshot ${snapshotId}). O Instagram pode estar lento agora.`
+    `Timeout aguardando a coleta da Bright Data (snapshot ${snapshotId}). O Instagram pode estar lento agora.`,
   );
 }
 
@@ -176,7 +224,7 @@ function normalizeHashtags(raw: unknown, caption: string): string[] {
     return raw
       .map((tag) => String(tag).trim())
       .filter(Boolean)
-      .map((tag) => (tag.startsWith('#') ? tag : `#${tag}`));
+      .map((tag) => (tag.startsWith("#") ? tag : `#${tag}`));
   }
   return caption.match(/#\w+/g) || [];
 }
@@ -184,28 +232,40 @@ function normalizeHashtags(raw: unknown, caption: string): string[] {
 /** Extrai o shortcode de uma URL de reel/post do Instagram */
 function extractShortcode(url: string): string {
   const match = url.match(/instagram\.com\/(?:reel|reels|p|tv)\/([^/?#]+)/i);
-  return match ? match[1] : '';
+  return match ? match[1] : "";
 }
 
 /** Converte um registro cru da Bright Data no nosso formato */
-function mapReel(item: Record<string, any>, fallbackUsername: string): BrightDataReelInfo | null {
+function mapReel(
+  item: BrightDataRecord,
+  fallbackUsername: string,
+): BrightDataReelInfo | null {
   // Com include_errors=true a Bright Data devolve itens de erro no mesmo array
   if (item.error || item.warning) {
-    console.warn(`⚠️ [Bright Data] Item com erro: ${item.error || item.warning}`);
+    console.warn(
+      `⚠️ [Bright Data] Item com erro: ${item.error || item.warning}`,
+    );
     return null;
   }
 
   const videoUrl = item.video_url || item.videoUrl || null;
   if (!videoUrl) {
-    console.warn(`⚠️ [Bright Data] Item sem video_url: ${item.shortcode || item.post_id || 'desconhecido'}`);
+    console.warn(
+      `⚠️ [Bright Data] Item sem video_url: ${item.shortcode || item.post_id || "desconhecido"}`,
+    );
     return null;
   }
 
-  const itemUrl: string = item.url || '';
-  const reelId = item.shortcode || extractShortcode(itemUrl) || item.post_id || item.content_id || '';
+  const itemUrl: string = item.url || "";
+  const reelId =
+    item.shortcode ||
+    extractShortcode(itemUrl) ||
+    item.post_id ||
+    item.content_id ||
+    "";
   if (!reelId) return null;
 
-  const captionText: string = item.description || item.caption || '';
+  const captionText: string = item.description || item.caption || "";
   const hashtags = normalizeHashtags(item.hashtags, captionText);
 
   return {
@@ -213,7 +273,7 @@ function mapReel(item: Record<string, any>, fallbackUsername: string): BrightDat
     // Normalizar para /reel/<code>/ para dedup consistente com o restante do sistema
     url: `https://www.instagram.com/reel/${reelId}/`,
     videoUrl,
-    caption: captionText.replace(/#\w+/g, '').trim(),
+    caption: captionText.replace(/#\w+/g, "").trim(),
     hashtags,
     timestamp: item.date_posted || new Date().toISOString(),
     likesCount: Number(item.likes) || 0,
@@ -227,23 +287,32 @@ function mapReel(item: Record<string, any>, fallbackUsername: string): BrightDat
 function discoveryQuery(): string {
   return new URLSearchParams({
     dataset_id: getReelsDataset(),
-    include_errors: 'true',
-    type: 'discover_new',
-    discover_by: 'url',
+    include_errors: "true",
+    type: "discover_new",
+    discover_by: "url",
   }).toString();
 }
 
 /** Username limpo e URL do perfil */
 function profileInput(username: string, limit: number) {
-  const cleanUsername = username.replace(/^@/, '').trim();
+  const cleanUsername = username.replace(/^@/, "").trim();
   return {
     cleanUsername,
-    input: [{ url: `https://www.instagram.com/${cleanUsername}/`, num_of_posts: limit }],
+    input: [
+      {
+        url: `https://www.instagram.com/${cleanUsername}/`,
+        num_of_posts: limit,
+      },
+    ],
   };
 }
 
 /** Converte os registros crus em reels, respeitando o limite */
-function mapReels(items: Record<string, any>[], username: string, limit: number): BrightDataReelInfo[] {
+function mapReels(
+  items: BrightDataRecord[],
+  username: string,
+  limit: number,
+): BrightDataReelInfo[] {
   const reels: BrightDataReelInfo[] = [];
   for (const item of items) {
     const reel = mapReel(item, username);
@@ -264,23 +333,35 @@ function mapReels(items: Record<string, any>[], username: string, limit: number)
  */
 export async function discoverReelsBrightData(
   username: string,
-  limit: number = 10
+  limit: number = 10,
 ): Promise<BrightDataReelInfo[]> {
   if (!isBrightDataConfigured()) {
-    throw new Error('BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env');
+    throw new Error(
+      "BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env",
+    );
   }
 
   const { cleanUsername, input } = profileInput(username, limit);
-  console.log(`🌐 [Bright Data] Descobrindo reels de @${cleanUsername} (limite: ${limit})...`);
+  console.log(
+    `🌐 [Bright Data] Descobrindo reels de @${cleanUsername} (limite: ${limit})...`,
+  );
 
   try {
-    const items = await runCollection(discoveryQuery(), input, getSnapshotTimeoutMs(180000));
+    const items = await runCollection(
+      discoveryQuery(),
+      input,
+      getSnapshotTimeoutMs(180000),
+    );
     const reels = mapReels(items, cleanUsername, limit);
-    console.log(`🌐 [Bright Data] ${reels.length} reels com vídeo encontrados para @${cleanUsername}`);
+    console.log(
+      `🌐 [Bright Data] ${reels.length} reels com vídeo encontrados para @${cleanUsername}`,
+    );
     return reels;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`❌ [Bright Data] Erro ao descobrir reels de @${cleanUsername}: ${msg}`);
+    throw new Error(
+      `❌ [Bright Data] Erro ao descobrir reels de @${cleanUsername}: ${msg}`,
+    );
   }
 }
 
@@ -290,15 +371,99 @@ export async function discoverReelsBrightData(
  *
  * @returns snapshot_id da coleta
  */
-export async function startReelsDiscovery(username: string, limit: number = 10): Promise<string> {
+export async function startReelsDiscovery(
+  username: string,
+  limit: number = 10,
+): Promise<string> {
   if (!isBrightDataConfigured()) {
-    throw new Error('BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env');
+    throw new Error(
+      "BRIGHTDATA_API_TOKEN não configurado. Adicione ao arquivo .env",
+    );
   }
 
   const { cleanUsername, input } = profileInput(username, limit);
   const snapshotId = await triggerCollection(discoveryQuery(), input);
-  console.log(`🌐 [Bright Data] Coleta de @${cleanUsername} disparada (snapshot ${snapshotId}) — resultado no próximo ciclo`);
+  console.log(
+    `🌐 [Bright Data] Coleta de @${cleanUsername} disparada (snapshot ${snapshotId}) — resultado no próximo ciclo`,
+  );
   return snapshotId;
+}
+
+export async function startProfileDiscovery(
+  username: string,
+  platform: "instagram" | "facebook",
+  limit: number,
+): Promise<string> {
+  if (platform === "instagram") return startReelsDiscovery(username, limit);
+  const clean = username.replace(/^@/, "").trim();
+  if (!/^[\w.-]+$/.test(clean)) throw new Error("Perfil Facebook inválido.");
+  const query = new URLSearchParams({
+    dataset_id:
+      process.env.BRIGHTDATA_FACEBOOK_REELS_DATASET || "gd_lyclm3ey2q6rww027t",
+    include_errors: "true",
+  });
+  return triggerCollection(query.toString(), [
+    { url: `https://www.facebook.com/${clean}`, num_of_posts: limit },
+  ]);
+}
+
+export async function startSingleReelDiscovery(url: string): Promise<string> {
+  const parsed = new URL(url);
+  if (
+    !["instagram.com", "www.instagram.com"].includes(parsed.hostname) ||
+    !/^\/(reel|reels|p)\/[\w-]+\/?$/.test(parsed.pathname)
+  )
+    throw new Error("URL Instagram inválida.");
+  const query = new URLSearchParams({
+    dataset_id: getReelsDataset(),
+    include_errors: "true",
+  });
+  return triggerCollection(query.toString(), [
+    { url: parsed.origin + parsed.pathname },
+  ]);
+}
+
+export async function collectProfileDiscovery(
+  snapshotId: string,
+  username: string,
+  platform: "instagram" | "facebook",
+  limit: number,
+): Promise<BrightDataReelInfo[] | null> {
+  if (platform === "instagram")
+    return collectReelsDiscovery(snapshotId, username, limit);
+  const items = await checkCollection(snapshotId);
+  if (!items) return null;
+  const reels: BrightDataReelInfo[] = [];
+  for (const item of items) {
+    if (item.error || item.warning)
+      throw new Error(String(item.error || item.warning));
+    const id = String(
+      item.shortcode ||
+        String(item.url || "").match(/\/reel\/(\d+)/)?.[1] ||
+        item.post_id ||
+        "",
+    );
+    if (!id || !item.video_url) continue;
+    const caption = String(item.content || item.description || "");
+    reels.push({
+      id,
+      url: `https://www.facebook.com/reel/${id}/`,
+      videoUrl: String(item.video_url),
+      caption,
+      hashtags: normalizeHashtags(item.hashtags, caption),
+      timestamp: String(item.date_posted || ""),
+      likesCount: Number(item.likes) || 0,
+      viewsCount: Number(item.video_view_count) || 0,
+      commentsCount: Number(item.num_comments) || 0,
+      ownerUsername: username,
+    });
+    if (reels.length >= limit) break;
+  }
+  if (items.length && !reels.length)
+    throw new Error(
+      "Coleta sem vídeos válidos; confira o contrato do dataset.",
+    );
+  return reels;
 }
 
 /**
@@ -310,14 +475,16 @@ export async function startReelsDiscovery(username: string, limit: number = 10):
 export async function collectReelsDiscovery(
   snapshotId: string,
   username: string,
-  limit: number = 10
+  limit: number = 10,
 ): Promise<BrightDataReelInfo[] | null> {
-  const cleanUsername = username.replace(/^@/, '').trim();
+  const cleanUsername = username.replace(/^@/, "").trim();
   const items = await checkCollection(snapshotId);
   if (!items) return null;
 
   const reels = mapReels(items, cleanUsername, limit);
-  console.log(`🌐 [Bright Data] ${reels.length} reels com vídeo recolhidos para @${cleanUsername} (snapshot ${snapshotId})`);
+  console.log(
+    `🌐 [Bright Data] ${reels.length} reels com vídeo recolhidos para @${cleanUsername} (snapshot ${snapshotId})`,
+  );
   return reels;
 }
 
@@ -328,16 +495,27 @@ export async function collectReelsDiscovery(
  * endpoint de progresso: token inválido responde 401, token válido responde
  * 404 (snapshot inexistente) — sem consumir crédito de coleta.
  */
-export async function testBrightDataConnection(): Promise<{ ok: boolean; user?: string; error?: string }> {
+export async function testBrightDataConnection(): Promise<{
+  ok: boolean;
+  user?: string;
+  error?: string;
+}> {
   if (!isBrightDataConfigured()) {
-    return { ok: false, error: 'BRIGHTDATA_API_TOKEN não configurado' };
+    return { ok: false, error: "BRIGHTDATA_API_TOKEN não configurado" };
   }
 
   try {
-    const res = await brightDataFetch('/datasets/v3/progress/s_connection_probe', {}, 20000);
+    const res = await brightDataFetch(
+      "/datasets/v3/progress/s_connection_probe",
+      {},
+      20000,
+    );
 
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: 'Token inválido. Verifique seu BRIGHTDATA_API_TOKEN.' };
+      return {
+        ok: false,
+        error: "Token inválido. Verifique seu BRIGHTDATA_API_TOKEN.",
+      };
     }
 
     // 404/400 = token aceito, snapshot inexistente (esperado); 200 = improvável, mas ok
@@ -345,7 +523,10 @@ export async function testBrightDataConnection(): Promise<{ ok: boolean; user?: 
       return { ok: true, user: `dataset ${getReelsDataset()}` };
     }
 
-    return { ok: false, error: describeHttpError(res.status, await res.text()) };
+    return {
+      ok: false,
+      error: describeHttpError(res.status, await res.text()),
+    };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     return { ok: false, error: `Erro de conexão: ${msg}` };
@@ -372,16 +553,18 @@ function describePostError(error: string): string {
  * @returns Dados do reel com a URL direta do vídeo
  * @throws Com o motivo, se a Bright Data não estiver configurada ou não devolver o vídeo
  */
-export async function fetchSingleReelBrightData(reelUrl: string): Promise<BrightDataReelInfo> {
+export async function fetchSingleReelBrightData(
+  reelUrl: string,
+): Promise<BrightDataReelInfo> {
   if (!isBrightDataConfigured()) {
-    throw new Error('BRIGHTDATA_API_TOKEN não configurado');
+    throw new Error("BRIGHTDATA_API_TOKEN não configurado");
   }
 
   // Normalizar a URL — remover parâmetros de rastreamento (?igsh=...)
   let cleanUrl = reelUrl;
   try {
     const urlObj = new URL(reelUrl);
-    cleanUrl = `${urlObj.origin}${urlObj.pathname}`.replace(/\/$/, '') + '/';
+    cleanUrl = `${urlObj.origin}${urlObj.pathname}`.replace(/\/$/, "") + "/";
   } catch {
     // Se falhar, usa a URL original
   }
@@ -390,13 +573,17 @@ export async function fetchSingleReelBrightData(reelUrl: string): Promise<Bright
 
   const query = new URLSearchParams({
     dataset_id: getReelsDataset(),
-    include_errors: 'true',
+    include_errors: "true",
   }).toString();
 
-  const items = await runCollection(query, [{ url: cleanUrl }], getSnapshotTimeoutMs(180000));
+  const items = await runCollection(
+    query,
+    [{ url: cleanUrl }],
+    getSnapshotTimeoutMs(180000),
+  );
 
   if (items.length === 0) {
-    throw new Error('a Bright Data não devolveu nenhum resultado');
+    throw new Error("a Bright Data não devolveu nenhum resultado");
   }
 
   const first = items[0];
@@ -404,9 +591,11 @@ export async function fetchSingleReelBrightData(reelUrl: string): Promise<Bright
     throw new Error(describePostError(String(first.error || first.warning)));
   }
 
-  const reel = mapReel(first, '');
+  const reel = mapReel(first, "");
   if (!reel) {
-    throw new Error('a Bright Data devolveu o post sem video_url (pode não ser um vídeo)');
+    throw new Error(
+      "a Bright Data devolveu o post sem video_url (pode não ser um vídeo)",
+    );
   }
 
   console.log(`🌐 [Bright Data] URL direta obtida para reel ${reel.id} ✅`);

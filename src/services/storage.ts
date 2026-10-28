@@ -4,9 +4,9 @@ import {
   DeleteObjectCommand,
   ListObjectsV2Command,
   HeadObjectCommand,
-} from '@aws-sdk/client-s3';
-import fs from 'fs';
-import path from 'path';
+} from "@aws-sdk/client-s3";
+import fs from "fs";
+import path from "path";
 
 /**
  * Cria o cliente S3 configurado para Cloudflare R2.
@@ -19,12 +19,12 @@ function getR2Client(): S3Client {
 
   if (!accountId || !accessKeyId || !secretAccessKey) {
     throw new Error(
-      '❌ Variáveis de ambiente R2 não configuradas. Defina R2_ACCOUNT_ID, R2_ACCESS_KEY_ID e R2_SECRET_ACCESS_KEY.'
+      "❌ Variáveis de ambiente R2 não configuradas. Defina R2_ACCOUNT_ID, R2_ACCESS_KEY_ID e R2_SECRET_ACCESS_KEY.",
     );
   }
 
   return new S3Client({
-    region: 'auto',
+    region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: {
       accessKeyId,
@@ -39,7 +39,9 @@ function getR2Client(): S3Client {
 function getBucketName(): string {
   const bucket = process.env.R2_BUCKET_NAME;
   if (!bucket) {
-    throw new Error('❌ R2_BUCKET_NAME não configurado nas variáveis de ambiente.');
+    throw new Error(
+      "❌ R2_BUCKET_NAME não configurado nas variáveis de ambiente.",
+    );
   }
   return bucket;
 }
@@ -50,10 +52,12 @@ function getBucketName(): string {
 function getPublicUrl(): string {
   const publicUrl = process.env.R2_PUBLIC_URL;
   if (!publicUrl) {
-    throw new Error('❌ R2_PUBLIC_URL não configurado nas variáveis de ambiente.');
+    throw new Error(
+      "❌ R2_PUBLIC_URL não configurado nas variáveis de ambiente.",
+    );
   }
   // Remover trailing slash
-  return publicUrl.replace(/\/+$/, '');
+  return publicUrl.replace(/\/+$/, "");
 }
 
 /**
@@ -62,7 +66,10 @@ function getPublicUrl(): string {
  * @param key Chave (path) do objeto no bucket R2
  * @returns URL pública do arquivo enviado
  */
-export async function uploadVideo(filePath: string, key: string): Promise<string> {
+export async function uploadVideo(
+  filePath: string,
+  key: string,
+): Promise<string> {
   console.log(`☁️ Iniciando upload para R2: ${key}`);
 
   if (!fs.existsSync(filePath)) {
@@ -73,11 +80,13 @@ export async function uploadVideo(filePath: string, key: string): Promise<string
   const bucket = getBucketName();
   const publicUrl = getPublicUrl();
 
-  const fileContent = fs.readFileSync(filePath);
+  const fileContent = fs.createReadStream(filePath);
   const contentType = getMimeType(filePath);
   const stats = fs.statSync(filePath);
 
-  console.log(`☁️ Tamanho do arquivo: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+  console.log(
+    `☁️ Tamanho do arquivo: ${(stats.size / 1024 / 1024).toFixed(2)} MB`,
+  );
 
   const startTime = Date.now();
 
@@ -90,16 +99,17 @@ export async function uploadVideo(filePath: string, key: string): Promise<string
         ContentType: contentType,
         ContentLength: stats.size,
         Metadata: {
-          'uploaded-at': new Date().toISOString(),
-          'original-name': path.basename(filePath),
+          "uploaded-at": new Date().toISOString(),
+          "original-name": path.basename(filePath),
         },
-      })
+      }),
+      { abortSignal: AbortSignal.timeout(180_000) },
     );
 
     const durationMs = Date.now() - startTime;
     const url = `${publicUrl}/${key}`;
 
-    console.log(`☁️ Upload concluído em ${(durationMs / 1000).toFixed(1)}s: ${url}`);
+    console.log(`☁️ Upload concluído em ${(durationMs / 1000).toFixed(1)}s`);
     return url;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -122,7 +132,7 @@ export async function deleteVideo(key: string): Promise<void> {
       new DeleteObjectCommand({
         Bucket: bucket,
         Key: key,
-      })
+      }),
     );
     console.log(`☁️ Arquivo removido: ${key}`);
   } catch (error) {
@@ -136,7 +146,7 @@ export async function deleteVideo(key: string): Promise<void> {
  * @returns Lista de chaves dos objetos
  */
 export async function listVideos(): Promise<string[]> {
-  console.log('☁️ Listando vídeos no R2...');
+  console.log("☁️ Listando vídeos no R2...");
 
   const client = getR2Client();
   const bucket = getBucketName();
@@ -150,7 +160,7 @@ export async function listVideos(): Promise<string[]> {
           Bucket: bucket,
           ContinuationToken: continuationToken,
           MaxKeys: 1000,
-        })
+        }),
       );
 
       if (response.Contents) {
@@ -196,7 +206,7 @@ export async function cleanupOldVideos(daysOld: number): Promise<number> {
           Bucket: bucket,
           ContinuationToken: continuationToken,
           MaxKeys: 1000,
-        })
+        }),
       );
 
       if (response.Contents) {
@@ -207,15 +217,17 @@ export async function cleanupOldVideos(daysOld: number): Promise<number> {
                 new DeleteObjectCommand({
                   Bucket: bucket,
                   Key: obj.Key,
-                })
+                }),
               );
               deletedCount++;
               console.log(`☁️ Removido (antigo): ${obj.Key}`);
             } catch (deleteError) {
               console.error(
                 `❌ Falha ao remover ${obj.Key}: ${
-                  deleteError instanceof Error ? deleteError.message : String(deleteError)
-                }`
+                  deleteError instanceof Error
+                    ? deleteError.message
+                    : String(deleteError)
+                }`,
               );
             }
           }
@@ -247,7 +259,7 @@ export async function videoExists(key: string): Promise<boolean> {
       new HeadObjectCommand({
         Bucket: bucket,
         Key: key,
-      })
+      }),
     );
     return true;
   } catch {
@@ -265,9 +277,9 @@ export async function videoExists(key: string): Promise<boolean> {
 export function generateR2Key(
   reelId: number,
   sourceUsername: string,
-  ext: string = 'mp4'
+  ext: string = "mp4",
 ): string {
-  const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  const date = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
   return `reels/${sourceUsername}/${date}/reel_${reelId}.${ext}`;
 }
 
@@ -280,17 +292,17 @@ function getMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   // mime-types pode não estar disponível, usar mapeamento manual
   const mimeMap: Record<string, string> = {
-    '.mp4': 'video/mp4',
-    '.mov': 'video/quicktime',
-    '.avi': 'video/x-msvideo',
-    '.mkv': 'video/x-matroska',
-    '.webm': 'video/webm',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
   };
 
-  return mimeMap[ext] || 'application/octet-stream';
+  return mimeMap[ext] || "application/octet-stream";
 }
