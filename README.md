@@ -102,6 +102,8 @@ O diagnóstico não faz chamadas externas nem mostra tokens. Ele verifica execut
 
 “Rodar agora”, sincronizar fonte, publicar e reprocessar retornam **HTTP 202** com IDs de tarefas persistidas. A resposta significa enfileiramento; o estado final aparece no painel. GETs não iniciam o agendador nem revertem uma pausa.
 
+Um snapshot Bright Data com status `ready` pode conter registros de erro do crawler. Se nenhum registro tiver um vídeo utilizável, a coleta termina com falha e o motivo aparece na fonte. Em `scraper_rate_limited`, aguarde a recuperação do scraper antes de usar **Sincronizar**; o app não dispara uma nova coleta paga apenas por ter recebido esse erro. O snapshot concluído com falha é liberado, enquanto uma falha temporária ao consultar a API mantém o snapshot para outra leitura. Um resultado realmente vazio (`[]`) continua válido. Um ciclo do cron que não iniciou nova coleta não apaga a falha exibida na fonte.
+
 A pausa global impede novas admissões; o trabalho em andamento pode terminar. Desligar publicação automática bloqueia novas tarefas automáticas; uma publicação manual explicitamente solicitada continua permitida. Não desligue serviços durante um envio se puder esperar sua conclusão.
 
 ## Migração e recuperação

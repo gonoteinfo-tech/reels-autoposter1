@@ -13,6 +13,7 @@ import {
   collectProfileDiscovery,
   isBrightDataConfigured,
   startSingleReelDiscovery,
+  BrightDataSnapshotError,
 } from "./brightdata-discoverer";
 import { downloadMedia, checkDiskSpace, runTool } from "./media";
 import { normalizeVideo } from "./video-processor";
@@ -537,12 +538,22 @@ async function collect(job: Job, q: JobQueue, settings: AppSettings) {
   const snapshot = payload.snapshot || source.pending_snapshot_id;
   if (!snapshot) return;
   const platform = source.platform === "facebook" ? "facebook" : "instagram";
-  const items = await collectProfileDiscovery(
-    snapshot,
-    source.username,
-    platform,
-    settings.discovery_limit,
-  );
+  let items;
+  try {
+    items = await collectProfileDiscovery(
+      snapshot,
+      source.username,
+      platform,
+      settings.discovery_limit,
+    );
+  } catch (error) {
+    if (error instanceof BrightDataSnapshotError) {
+      q.assertOwned(job);
+      db.clearSourcePendingSnapshotIf(source.id, snapshot);
+      throw new PipelineError(error.message, "failed", error.code);
+    }
+    throw error;
+  }
   if (!items) {
     const start =
       payload.started ||

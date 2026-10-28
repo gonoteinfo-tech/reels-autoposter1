@@ -1,5 +1,8 @@
+import { safeError } from "./jobs";
+
 type BrightDataRecord = Record<string, unknown> & {
   error?: string;
+  error_code?: string;
   warning?: string;
   video_url?: string;
   videoUrl?: string;
@@ -12,6 +15,18 @@ type BrightDataRecord = Record<string, unknown> & {
   date_posted?: string;
   user_posted?: string;
 };
+
+/** The snapshot is complete; reading it again cannot repair its result. */
+export class BrightDataSnapshotError extends Error {
+  readonly code: string;
+  constructor(detail: string) {
+    const limited = /too many requests|rate.?limit|\b429\b/i.test(detail);
+    super(limited
+      ? `A Bright Data atingiu um limite de solicitações no site de origem. Aguarde e tente Sincronizar novamente. Detalhe: ${safeError(detail)}`
+      : `A coleta da Bright Data terminou sem um resultado válido. Confira o scraper antes de sincronizar novamente. Detalhe: ${safeError(detail)}`);
+    this.code = limited ? "scraper_rate_limited" : "scraper_result";
+  }
+}
 /**
  * Integração com a Bright Data (Web Scraper API — dataset de Instagram Reels).
  *
@@ -165,7 +180,7 @@ async function checkCollection(
   const progress = (await progressRes.json()) as { status?: string };
 
   if (progress.status === "failed" || progress.status === "canceled") {
-    throw new Error(
+    throw new BrightDataSnapshotError(
       `Coleta da Bright Data terminou com status "${progress.status}".`,
     );
   }
@@ -185,7 +200,9 @@ async function checkCollection(
   }
 
   const data = await snapshotRes.json();
-  return Array.isArray(data) ? (data as BrightDataRecord[]) : [];
+  if (!Array.isArray(data) || data.some(item => !item || typeof item !== "object" || Array.isArray(item)))
+    throw new BrightDataSnapshotError("Formato de snapshot inválido: esperado um array de registros.");
+  return data as BrightDataRecord[];
 }
 
 /**
@@ -241,9 +258,9 @@ function mapReel(
   fallbackUsername: string,
 ): BrightDataReelInfo | null {
   // Com include_errors=true a Bright Data devolve itens de erro no mesmo array
-  if (item.error || item.warning) {
+  if (item.error || item.warning || item.error_code) {
     console.warn(
-      `⚠️ [Bright Data] Item com erro: ${item.error || item.warning}`,
+      `⚠️ [Bright Data] Item com erro: ${safeError(item.error || item.warning || item.error_code)}`,
     );
     return null;
   }
@@ -319,6 +336,12 @@ function mapReels(
     if (reel) reels.push(reel);
     // A Bright Data pode devolver mais itens do que o solicitado
     if (reels.length >= limit) break;
+  }
+  if (items.length && !reels.length) {
+    const failed = items.find(item => item.error || item.warning || item.error_code);
+    throw new BrightDataSnapshotError(failed
+      ? String(failed.error || failed.warning || failed.error_code)
+      : "O snapshot contém registros, mas nenhum vídeo com identificador e URL de download válidos.");
   }
   return reels;
 }
@@ -435,8 +458,8 @@ export async function collectProfileDiscovery(
   if (!items) return null;
   const reels: BrightDataReelInfo[] = [];
   for (const item of items) {
-    if (item.error || item.warning)
-      throw new Error(String(item.error || item.warning));
+    if (item.error || item.warning || item.error_code)
+      throw new BrightDataSnapshotError(String(item.error || item.warning || item.error_code));
     const id = String(
       item.shortcode ||
         String(item.url || "").match(/\/reel\/(\d+)/)?.[1] ||
@@ -460,7 +483,7 @@ export async function collectProfileDiscovery(
     if (reels.length >= limit) break;
   }
   if (items.length && !reels.length)
-    throw new Error(
+    throw new BrightDataSnapshotError(
       "Coleta sem vídeos válidos; confira o contrato do dataset.",
     );
   return reels;

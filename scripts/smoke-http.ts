@@ -131,6 +131,21 @@ async function main() {
       ).status,
       404,
     );
+    // A skipped discovery on a later cron tick must not hide a failed collection.
+    q.finish(q.claim("smoke", Date.now(), 60_000, ["discover"])!);
+    const collection = q.enqueue(1, "collect", source.id, { snapshot: "failed" });
+    q.fail(q.claim("smoke", Date.now(), 60_000, ["collect"])!, "scraper_rate_limited", "Limite de solicitações na origem.", "failed");
+    q.db.prepare("UPDATE pipeline_jobs SET updated_at=? WHERE id=?").run(Date.now() + 1000, a.data.data.job.id);
+    const failedSources = (await call("/api/sources")).data.data.sources;
+    assert.equal(failedSources.find((s: { id: number }) => s.id === source.id).pipeline_status, "failed");
+    assert.equal(failedSources.find((s: { id: number }) => s.id === source.id).pipeline_error, "Limite de solicitações na origem.");
+    await call("/api/sources/import", "POST", { sourceId: source.id });
+    assert.equal((await call("/api/sources")).data.data.sources.find((s: { id: number }) => s.id === source.id).pipeline_status, "queued");
+    q.finish(q.claim("smoke", Date.now(), 60_000, ["discover"])!);
+    q.enqueue(1, "collect", source.id, { snapshot: "recovered" }, true);
+    q.finish(q.claim("smoke", Date.now(), 60_000, ["collect"])!);
+    assert.equal(q.get(collection.id, 1)?.status, "succeeded");
+    assert.equal((await call("/api/sources")).data.data.sources.find((s: { id: number }) => s.id === source.id).pipeline_status, "succeeded");
     assert.equal(
       (await call("/api/reels/reprocess", "POST", { reelId: "bad" })).status,
       400,
@@ -151,7 +166,7 @@ async function main() {
     });
     assert.equal(dashboard.status, 200);
     console.log(
-      "HTTP smoke passed: auth, ownership, token masking/preservation, cron validation, durable 202, dedupe, paused reads and dashboard. No external calls.",
+      "HTTP smoke passed: auth, ownership, token masking/preservation, cron validation, durable 202, dedupe, paused reads, source failure/recovery and dashboard. No external calls.",
     );
   } finally {
     server.kill("SIGTERM");
