@@ -25,7 +25,8 @@ test("a finished crawler failure is recorded, releases its snapshot and permits 
     const url = input instanceof Request ? input.url : String(input);
     if (url.includes("/trigger?")) {
       triggers++;
-      return Response.json({ snapshot_id: "recovered" });
+      const mode = new URL(url).searchParams.get("discover_by");
+      return Response.json({ snapshot_id: mode === "url_all_reels" ? "recovered" : "failed" });
     }
     if (url.includes("/progress/")) return Response.json({ status: "ready" });
     if (url.includes("/snapshot/failed")) return Response.json([{

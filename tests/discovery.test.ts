@@ -66,6 +66,24 @@ function snapshot(t: TestContext, data: unknown) {
   t.after(() => fake.mock.restore());
 }
 
+test("Instagram profile discovery uses the all-Reels mode with the requested collection limit", async (t) => {
+  process.env.BRIGHTDATA_API_TOKEN = "test";
+  let requestedUrl = "";
+  let requestedBody: unknown;
+  const fake = mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    requestedUrl = request.url;
+    requestedBody = await request.json();
+    return Response.json({ snapshot_id: "profile-snapshot" });
+  });
+  t.after(() => fake.mock.restore());
+  assert.equal(await startProfileDiscovery("@metropoles", "instagram", 1), "profile-snapshot");
+  const query = new URL(requestedUrl).searchParams;
+  assert.equal(query.get("type"), "discover_new");
+  assert.equal(query.get("discover_by"), "url_all_reels");
+  assert.deepEqual(requestedBody, [{ url: "https://www.instagram.com/metropoles/", num_of_posts: 1 }]);
+});
+
 test("an Instagram snapshot containing only crawler errors is not a successful empty collection", async (t) => {
   snapshot(t, [{
     timestamp: "2026-10-28T17:59:52Z",

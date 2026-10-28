@@ -6,6 +6,7 @@ O painel registra tarefas no banco; a automação continua mesmo com o navegador
 ## Como funciona
 
 - Instagram e Facebook: coleta de perfis com Bright Data, snapshots acompanhados a cada 15 segundos.
+- A descoberta de perfis Instagram usa `discover_by=url_all_reels`, mantendo `num_of_posts` igual ao limite de coleta configurado.
 - TikTok/YouTube: descoberta e download com `yt-dlp` atualizado.
 - Preparação: download limitado, legenda jornalística com Gemini, normalização 1080×1920/H.264/AAC e marca d'água opcional com FFmpeg.
 - Cloudflare R2: envio em stream; URL pública usada pela Meta.

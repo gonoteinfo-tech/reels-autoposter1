@@ -306,7 +306,7 @@ function discoveryQuery(): string {
     dataset_id: getReelsDataset(),
     include_errors: "true",
     type: "discover_new",
-    discover_by: "url",
+    discover_by: "url_all_reels",
   }).toString();
 }
 
