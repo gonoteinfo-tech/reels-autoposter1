@@ -48,6 +48,14 @@ npm run worker
 
 O diretório `DATA_DIR` precisa ser o mesmo nos dois processos. Sem ele, o padrão é `data/` no diretório do projeto. O worker e o web devem usar as mesmas variáveis de ambiente.
 
+### Painel e validação de interface
+
+O painel usa uma biblioteca de cards com player, busca em todos os vídeos, filtros por etapa e paginação. A publicação permite escolher destinos habilitados e continuar uma publicação parcial. Processamento, reprocessamento e execução de ciclos pedem confirmação porque também podem publicar e consumir créditos; HTTP 202 indica uma tarefa na fila.
+
+Após `npm run build`, o teste de navegador pode ser executado com `node --import tsx scripts/smoke-dashboard.mjs`. Ele requer Playwright disponível no Node e Chromium (já fornecidos pelo ambiente na nuvem); `CHROMIUM_PATH` e `DASHBOARD_SMOKE_PORT` permitem ajustar executável e porta. `DASHBOARD_SCREENSHOTS=/caminho/fora/do/repositorio` salva capturas de desktop e celular.
+
+Esse teste cria banco e vídeo sintéticos temporários, mantém a fila pausada, testa os botões e remove os dados ao terminar. Não usa o banco da aplicação nem executa publicações externas.
+
 ## Implantar na VPS existente
 
 Os exemplos consideram `/opt/reels-autoposter` e usuário `ubuntu`, conforme a instalação investigada. Ajuste `WorkingDirectory`, `User`, `Group`, `ExecStart`, `DATA_DIR` e `ReadWritePaths` nos arquivos em `deploy/` se forem diferentes. Confirme o caminho do Node com `command -v node`; instalações via NVM podem não usar `/usr/bin/node`.

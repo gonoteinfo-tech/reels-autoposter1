@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { initDatabase, getDashboardStats } from "@/services/database";
+import { initDatabase } from "@/services/database";
+import { getDashboardSummary } from "@/services/dashboard";
 import { getLoggedInUser } from "@/services/auth";
-import type { DashboardStats, ApiResponse } from "@/types";
+import type { ApiResponse } from "@/types";
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -23,16 +24,9 @@ export async function GET(): Promise<NextResponse<ApiResponse>> {
       );
     }
 
-    const dbStats = getDashboardStats(user.id);
-
-    const stats: DashboardStats = {
-      ...dbStats,
-      storage_used_mb: dbStats.storage_used_mb,
-    };
-
     return NextResponse.json({
       success: true,
-      data: stats,
+      data: getDashboardSummary(user.id),
     });
   } catch (error) {
     console.error("❌ Erro ao buscar estatísticas:", error);

@@ -19,7 +19,7 @@ export default function AppShell({ user, children }: { user: User; children: Rea
   return (
     <div className="app-shell">
       <Sidebar
-        collapsed={collapsed}
+        collapsed={collapsed && !mobileOpen}
         onToggle={() => setCollapsed((v) => !v)}
         user={user}
         mobileOpen={mobileOpen}
@@ -32,7 +32,7 @@ export default function AppShell({ user, children }: { user: User; children: Rea
             <BrandMark size={28} />
             <span className="font-display text-lg font-bold">GO POST</span>
           </Link>
-          <button type="button" className="btn btn-icon" onClick={() => setMobileOpen(true)} aria-label="Abrir menu">
+          <button type="button" className="btn btn-icon" onClick={() => setMobileOpen(true)} aria-label="Abrir menu" aria-expanded={mobileOpen} aria-controls="workspace-navigation">
             <Menu />
           </button>
         </header>

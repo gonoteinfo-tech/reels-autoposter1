@@ -6,7 +6,6 @@ import {
   createReel,
   getReelByUrl,
   getReelByInstagramId,
-  getDb,
   getReelById,
   deleteReel,
   getAppSettings,
@@ -17,8 +16,9 @@ import { DATA_DIR } from "@/services/paths";
 import path from "node:path";
 import { getLoggedInUser } from "@/services/auth";
 import { extractVideoId } from "@/services/instagram-downloader";
+import { listDashboardReels } from "@/services/dashboard";
 import fs from "fs";
-import type { Reel, ReelStage, ApiResponse } from "@/types";
+import type { ApiResponse } from "@/types";
 
 /** Garante que o banco está inicializado */
 function ensureDb() {
@@ -44,54 +44,9 @@ export async function GET(
 
     const { searchParams } = new URL(request.url);
 
-    const page = Math.max(1, Number(searchParams.get("page")) || 1);
-    const limit = Math.min(
-      100,
-      Math.max(1, Number(searchParams.get("limit")) || 20),
-    );
-    const stage = searchParams.get("stage") as ReelStage | null;
-    const sourceId = searchParams.get("source_id");
-
-    const database = getDb();
-    const conditions: string[] = ["user_id = ?"];
-    const params: unknown[] = [user.id];
-
-    if (stage) {
-      conditions.push("stage = ?");
-      params.push(stage);
-    }
-
-    if (sourceId) {
-      conditions.push("source_id = ?");
-      params.push(Number(sourceId));
-    }
-
-    const whereClause =
-      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-    // Contar total de registros do usuário
-    const countRow = database
-      .prepare(`SELECT COUNT(*) as count FROM reels ${whereClause}`)
-      .get(...params) as { count: number };
-    const total = countRow.count;
-    const totalPages = Math.ceil(total / limit);
-    const offset = (page - 1) * limit;
-
-    // Buscar reels do usuário com paginação
-    const reels = database
-      .prepare(
-        `SELECT * FROM reels ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      )
-      .all(...params, limit, offset) as Reel[];
-
     return NextResponse.json({
       success: true,
-      data: {
-        reels,
-        total,
-        page,
-        totalPages,
-      },
+      data: listDashboardReels(user.id, searchParams),
     });
   } catch (error) {
     console.error("❌ Erro ao listar reels:", error);

@@ -135,6 +135,10 @@ export interface DashboardStats {
   errors_today: number;
   pipeline_queue: number;
   storage_used_mb: number;
+  stage_counts: Record<ReelStage, number>;
+  recent_published: Reel[];
+  next_reel: Reel | null;
+  reel_activity: Record<number, { running: boolean; needs_review: boolean }>;
 }
 
 /** Resposta padrão da API */
