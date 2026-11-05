@@ -237,6 +237,38 @@ function countRelevantHashtags(value: string): number {
 }
 
 /**
+ * Anexa hashtags somente quando há pelo menos seis opções relevantes.
+ * Com menos contexto, publica apenas a legenda reescrita em vez de bloquear o reel
+ * ou preencher a saída com palavras soltas.
+ */
+export function finalizeRewrittenCaption(
+  rewritten: string,
+  suggestedHashtags: string[],
+  sourceHashtags?: string
+): string {
+  const sourceTags = sourceHashtags?.match(/#[\p{L}\p{N}_]+/gu) || [];
+  const uniqueTags = new Map<string, string>();
+
+  for (const rawTag of [...suggestedHashtags, ...sourceTags]) {
+    const tag = sanitizeHashtag(rawTag);
+    if (!tag) continue;
+    const key = tag.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (!uniqueTags.has(key)) uniqueTags.set(key, tag);
+  }
+
+  if (uniqueTags.size < 6) {
+    console.warn(`⚠️ Apenas ${uniqueTags.size} hashtag(s) relevante(s); publicando somente a legenda reescrita.`);
+    return rewritten.trim();
+  }
+
+  return ensureMinimumHashtags(
+    [rewritten.trim(), [...uniqueTags.values()].join(' ')].filter(Boolean).join('\n\n'),
+    undefined,
+    6
+  );
+}
+
+/**
  * Reescreve a legenda com outras palavras em tom jornalístico, preservando os fatos,
  * e fecha com hashtags sobre o assunto da legenda (pessoas, lugares, tipo de fato, tema).
  *
@@ -245,7 +277,7 @@ function countRelevantHashtags(value: string): number {
  *
  * @param originalCaption Legenda original do Reel
  * @param sourceHashtags Hashtags originais da fonte (opcional)
- * @returns Legenda reescrita pela IA com pelo menos 6 hashtags relevantes
+ * @returns Legenda reescrita, com hashtags apenas quando houver ao menos 6 relevantes
  */
 export async function rewriteCaption(originalCaption: string, sourceHashtags?: string): Promise<string> {
   const captionText = normalizeCaptionForComparison(originalCaption);
@@ -319,16 +351,9 @@ Responda somente com um JSON no formato:
         ? parsed.hashtags.map((tag) => sanitizeHashtag(String(tag))).filter((tag): tag is string => !!tag)
         : [];
 
-      const finalCaption = ensureMinimumHashtags(
-        [rewritten, tags.join(' ')].filter(Boolean).join('\n\n'),
-        sourceHashtags,
-        6
-      );
+      const finalCaption = finalizeRewrittenCaption(rewritten, tags, sourceHashtags);
 
       const hashtagCount = countRelevantHashtags(finalCaption);
-      if (hashtagCount < 6) {
-        throw new Error(`a IA não produziu hashtags suficientes (${hashtagCount}/6)`);
-      }
 
       providerCooldownUntil.delete(provider.key);
       console.log(
@@ -349,6 +374,6 @@ Responda somente com um JSON no formato:
   }
 
   throw new Error(
-    'Nenhuma IA conseguiu reescrever a legenda com pelo menos 6 hashtags relevantes. Publicação bloqueada para não reutilizar a legenda original.'
+    'Nenhuma IA conseguiu reescrever a legenda. Publicação bloqueada para não reutilizar a legenda original.'
   );
 }
