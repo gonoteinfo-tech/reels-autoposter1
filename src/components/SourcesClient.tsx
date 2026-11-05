@@ -332,7 +332,7 @@ export default function SourcesClient({ user }: { user: User }) {
                 className="card p-[18px] flex flex-col gap-3.5"
               >
                 <div className="flex items-center gap-3">
-                  <span className="w-10 h-10 rounded-full bg-[#26292e] flex items-center justify-center font-semibold uppercase shrink-0">
+                  <span className="source-avatar w-10 h-10 rounded-full flex items-center justify-center font-semibold uppercase shrink-0">
                     {source.username.replace(/[^a-z0-9]/gi, "").charAt(0) ||
                       "?"}
                   </span>
@@ -426,7 +426,7 @@ export default function SourcesClient({ user }: { user: User }) {
           role="status"
           className={`alert fixed bottom-24 lg:bottom-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-lg shadow-[0_16px_40px_rgba(0,0,0,0.5)] ${
             syncNotice.type === "error"
-              ? "alert-err bg-[#2a1719] border border-[#5a2a2a]"
+              ? "alert-err source-sync-error border"
               : "alert-ok"
           }`}
         >

@@ -1411,7 +1411,7 @@ export function updateSettings(
 /**
  * Retorna estatísticas para o dashboard de um usuário específico.
  */
-export function getDashboardStats(userId: number): DashboardStats {
+export function getDashboardStats(userId: number): Omit<DashboardStats, "stage_counts" | "recent_published" | "next_reel" | "reel_activity"> {
   const database = getDb();
 
   const sourcesRow = database

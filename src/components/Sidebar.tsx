@@ -28,11 +28,11 @@ export function isNavActive(pathname: string, href: string): boolean {
 export function BrandMark({ size = 30 }: { size?: number }) {
   return (
     <span
-      className="inline-flex items-center justify-center rounded-lg bg-accent shrink-0"
+      className="inline-flex items-center justify-center rounded-lg bg-accent text-white shrink-0"
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      <svg width={size * 0.44} height={size * 0.44} viewBox="0 0 24 24" fill="#111214">
+      <svg width={size * 0.44} height={size * 0.44} viewBox="0 0 24 24" fill="currentColor">
         <polygon points="7 4 20 12 7 20 7 4" />
       </svg>
     </span>
@@ -98,18 +98,19 @@ export default function Sidebar({
     <>
       <div className={`sidebar-backdrop ${mobileOpen ? "open" : ""}`} onClick={onMobileClose} aria-hidden="true" />
 
-      <aside className={`sidebar ${collapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`} aria-label="Menu">
+      <aside id="workspace-navigation" className={`sidebar ${collapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`} aria-label="Menu">
         <div className={`flex items-center gap-2.5 ${collapsed ? "justify-center" : "px-2"}`}>
           <BrandMark />
           {!collapsed && (
-            <span className="font-display text-[19px] font-bold tracking-tight flex-1">GO POST</span>
+            <span className="flex flex-col flex-1"><span className="font-display text-[19px] font-bold tracking-tight">GO POST<span className="text-accent">.</span></span><span className="text-[9px] tracking-[1.6px] text-faint uppercase">Estúdio de conteúdo</span></span>
           )}
           <button type="button" className="btn-icon btn lg:hidden" onClick={onMobileClose} aria-label="Fechar menu">
             <X />
           </button>
         </div>
 
-        <nav aria-label="Principal" className="flex flex-col gap-0.5">
+        <nav aria-label="Principal" className="flex flex-col gap-1.5">
+          {!collapsed && <span className="text-[9px] uppercase tracking-[1.5px] text-faint px-3 mb-2">Seu workspace</span>}
           {NAV_ITEMS.map(({ href, label, icon: Icon }) => (
             <Link
               key={href}
@@ -134,7 +135,7 @@ export default function Sidebar({
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={user.picture} alt="" className="w-[34px] h-[34px] rounded-full object-cover shrink-0" />
               ) : (
-                <span className="w-[34px] h-[34px] rounded-full bg-[#2a2d33] flex items-center justify-center text-[13px] font-semibold shrink-0">
+                <span className="sidebar-avatar w-[34px] h-[34px] rounded-full flex items-center justify-center text-[13px] font-semibold shrink-0">
                   {user.name.charAt(0).toUpperCase()}
                 </span>
               )}

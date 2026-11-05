@@ -1,652 +1,215 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Plus, RefreshCw, Loader2, Search, Clock } from "lucide-react";
-
-import AppShell, { PageHeader } from "@/components/AppShell";
+import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Film, Layers3, Loader2, Plus, RefreshCw, Search, Send, ShieldCheck, Sparkles, TriangleAlert, Users, X } from "lucide-react";
+import AppShell from "@/components/AppShell";
 import StatCard from "@/components/StatCard";
 import ReelCard from "@/components/ReelCard";
 import AddReelModal from "@/components/AddReelModal";
-import { clockTime, timeAgo, timeUntil } from "@/components/time";
-import type { Reel, DashboardStats, SchedulerStatus, User } from "@/types";
+import Modal from "@/components/Modal";
+import { clockTime, timeAgo } from "@/components/time";
+import type { AppSettings, DashboardStats, Reel, ReelStage, SchedulerStatus, User } from "@/types";
 
-const STAGE_FILTERS: { value: string; label: string }[] = [
-  { value: "all", label: "Todos" },
-  { value: "discovered", label: "Na fila" },
-  { value: "processing", label: "Processando" },
-  { value: "uploaded", label: "Prontos" },
-  { value: "published", label: "Publicados" },
-  { value: "error", label: "Erros" },
+type Target = "instagram" | "facebook";
+type Job = NonNullable<SchedulerStatus["jobs"]>[number];
+type Action = { kind: "publish" | "process" | "delete"; reel: Reel } | { kind: "run" | "retry-all" } | { kind: "review-published" | "review-retry"; job: Job };
+type Listing = { reels: Reel[]; total: number; page: number; totalPages: number };
+const FILTERS = [
+  { value: "all", label: "Todos", stages: [] },
+  { value: "discovered", label: "Na fila", stages: ["discovered"] },
+  { value: "processing", label: "Em produção", stages: ["downloading", "downloaded", "processing", "processed", "uploading", "publishing"] },
+  { value: "uploaded", label: "Prontos", stages: ["uploaded"] },
+  { value: "published", label: "Publicados", stages: ["published"] },
+  { value: "error", label: "Com erro", stages: ["error"] },
 ];
+const PIPELINE = [
+  { label: "Descoberta", icon: Search, stages: ["discovered"] },
+  { label: "Download", icon: ArrowDownToLine, stages: ["downloading", "downloaded"] },
+  { label: "Preparação", icon: Sparkles, stages: ["processing", "processed"] },
+  { label: "Upload", icon: Layers3, stages: ["uploading", "uploaded"] },
+  { label: "Publicação", icon: Send, stages: ["publishing"] },
+];
+const JOB_LABELS: Record<string, string> = { discover: "Coleta", collect: "Resultado da coleta", prepare: "Preparação", publish: "Publicação" };
+const JOB_STATUSES: Record<string, string> = { queued: "Na fila", running: "Em execução", blocked: "Ação necessária", needs_review: "Revisão necessária", failed: "Falhou", retry_wait: "Nova tentativa agendada" };
+const TARGET_LABELS: Record<Target, string> = { instagram: "Instagram", facebook: "Facebook" };
 
-/** Etapas mostradas na faixa do pipeline e os estágios que cada uma agrupa */
-const PIPELINE_STEPS: {
-  label: string;
-  stages: Reel["stage"][];
-  final?: boolean;
-}[] = [
-  { label: "Descoberta", stages: ["discovered"] },
-  { label: "Download", stages: ["downloading", "downloaded"] },
-  { label: "Marca d'água", stages: ["processing", "processed"] },
-  { label: "Upload", stages: ["uploading", "uploaded"] },
-  { label: "Publicação", stages: ["publishing"], final: true },
-];
+async function readApi<T>(url: string, init?: RequestInit): Promise<{ data: T; message?: string }> {
+  const res = await fetch(url, { cache: "no-store", ...init });
+  if (res.status === 401) throw new Error("Sua sessão expirou. Entre novamente para continuar.");
+  const result = await res.json().catch(() => null);
+  if (!res.ok || !result?.success) throw new Error(result?.error || "Não foi possível conectar ao servidor. Tente novamente.");
+  return result;
+}
 
 export default function DashboardClient({ user }: { user: User }) {
-  const [reels, setReels] = useState<Reel[]>([]);
+  const [listing, setListing] = useState<Listing>({ reels: [], total: 0, page: 1, totalPages: 0 });
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [schedulerStatus, setSchedulerStatus] =
-    useState<SchedulerStatus | null>(null);
-  const [stageFilter, setStageFilter] = useState("all");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [showAddModal, setShowAddModal] = useState(false);
+  const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [triggeringRun, setTriggeringRun] = useState(false);
-  const [reprocessingAll, setReprocessingAll] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  const sendCommand = async (url: string, body: object) => {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.success)
-      throw new Error(data.error || "Não foi possível registrar a tarefa.");
-    setNotice(data.message || "Tarefa registrada.");
-  };
-
-  const fetchData = useCallback(async () => {
-    try {
-      const [reelsRes, statsRes, schedulerRes] = await Promise.allSettled([
-        fetch(
-          `/api/reels?limit=50${stageFilter !== "all" ? `&stage=${stageFilter}` : ""}`,
-        ),
-        fetch("/api/stats"),
-        fetch("/api/scheduler"),
-      ]);
-
-      if (reelsRes.status === "fulfilled" && reelsRes.value.ok) {
-        const data = await reelsRes.value.json();
-        if (data.success) setReels(data.data?.reels || []);
-      }
-      if (statsRes.status === "fulfilled" && statsRes.value.ok) {
-        const data = await statsRes.value.json();
-        if (data.success) setStats(data.data);
-      }
-      if (schedulerRes.status === "fulfilled" && schedulerRes.value.ok) {
-        const data = await schedulerRes.value.json();
-        if (data.success) setSchedulerStatus(data.data);
-      }
-    } catch {
-      // erros de rede: a próxima atualização tenta de novo
-    } finally {
-      setLoading(false);
-    }
-  }, [stageFilter]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [showAllActivity, setShowAllActivity] = useState(false);
+  const [action, setAction] = useState<Action | null>(null);
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [actionError, setActionError] = useState("");
+  const [targets, setTargets] = useState<Target[]>([]);
+  const [postId, setPostId] = useState("");
 
   useEffect(() => {
-    queueMicrotask(fetchData);
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    if (search.trim() === query) return;
+    const timer = setTimeout(() => { setQuery(search.trim()); setPage(1); }, 300);
+    return () => clearTimeout(timer);
+  }, [search, query]);
 
-  const handleReview = async (jobId: string, published: boolean) => {
-    const postId = published
-      ? window.prompt("Informe o ID do post que você confirmou na plataforma:")
-      : undefined;
-    if (published && !postId) return;
-    if (
-      !published &&
-      !window.confirm(
-        "Confirme que não houve publicação nem coleta em andamento no provedor. Esta ação autoriza uma nova tentativa, que pode consumir créditos.",
-      )
-    )
-      return;
+  useEffect(() => {
+    const controller = new AbortController();
+    let first = true;
+    let fetching = false;
+    const load = async () => {
+      if (fetching) return;
+      fetching = true;
+      if (first) setLoading(true);
+      setRefreshing(true);
+      const params = new URLSearchParams({ limit: "12", page: String(page) });
+      if (filter !== "all") params.set("stage_group", filter);
+      if (query) params.set("q", query);
+      try {
+        const options = { signal: controller.signal };
+        const [videos, summary, status, config] = await Promise.all([
+          readApi<Listing>(`/api/reels?${params}`, options), readApi<DashboardStats>("/api/stats", options),
+          readApi<SchedulerStatus>("/api/scheduler", options), readApi<AppSettings>("/api/settings", options),
+        ]);
+        if (controller.signal.aborted) return;
+        if (videos.data.totalPages > 0 && page > videos.data.totalPages) { setPage(videos.data.totalPages); return; }
+        setListing(videos.data); setStats(summary.data); setScheduler(status.data); setSettings(config.data);
+        setLoadError(""); setUpdatedAt(new Date().toISOString());
+      } catch (error) {
+        if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : "Falha ao carregar o painel.");
+      } finally {
+        fetching = false; first = false;
+        if (!controller.signal.aborted) { setLoading(false); setRefreshing(false); }
+      }
+    };
+    queueMicrotask(load);
+    const interval = setInterval(load, 5000);
+    return () => { controller.abort(); clearInterval(interval); };
+  }, [page, filter, query, refresh]);
+
+  const counts = stats?.stage_counts;
+  const countStages = (stages: string[]) => stages.reduce((sum, stage) => sum + (counts?.[stage as ReelStage] || 0), 0);
+  const availableTargets = (reel: Reel): Target[] => (['instagram', 'facebook'] as Target[]).filter(target =>
+    settings?.[`${target}_enabled`] && !(target === 'instagram' ? reel.ig_post_id : reel.fb_post_id));
+  const openAction = (next: Action) => {
+    if (pendingRef.current) return;
+    setActionError(""); setPostId("");
+    if (next.kind === "publish") setTargets(availableTargets(next.reel));
+    setAction(next);
+  };
+  const closeAction = () => { if (!pendingRef.current) setAction(null); };
+  const submitAction = async () => {
+    if (!action || pendingRef.current) return;
+    if (action.kind === 'publish' && !targets.length) return;
+    if (action.kind === 'review-published' && !postId.trim()) return;
+    pendingRef.current = true; setPending(true); setActionError("");
     try {
-      await sendCommand("/api/pipeline/jobs", {
-        jobId,
-        action: published ? "confirm-published" : "confirm-not-published",
-        postId,
-      });
-      fetchData();
+      let url = "", body: object = {}, method = "POST";
+      switch (action.kind) {
+        case "publish": url = "/api/publish"; body = { reelId: action.reel.id, targets: targets.filter(t => availableTargets(action.reel).includes(t)) }; break;
+        case "process": url = "/api/reels/reprocess"; body = { reelId: action.reel.id }; break;
+        case "delete": url = `/api/reels?id=${action.reel.id}`; method = "DELETE"; break;
+        case "run": url = "/api/scheduler"; body = { action: "run-now" }; break;
+        case "retry-all": url = "/api/reels/reprocess"; body = { allFailed: true }; break;
+        case "review-published": case "review-retry": url = "/api/pipeline/jobs"; body = { jobId: action.job.id, action: action.kind === "review-published" ? "confirm-published" : "confirm-not-published", postId: postId.trim() || undefined }; break;
+      }
+      const result = await readApi<unknown>(url, { method, headers: { "Content-Type": "application/json" }, ...(method === "DELETE" ? {} : { body: JSON.stringify(body) }) });
+      const queued = action.kind !== 'delete' && action.kind !== 'review-published';
+      const waiting = queued && (scheduler?.paused || !scheduler?.worker_online);
+      setNotice({ text: `${result.message || (action.kind === 'delete' ? 'Vídeo excluído.' : 'Solicitação registrada na fila.')}${waiting ? ' A fila está pausada ou o worker está offline; a tarefa ficará salva até a automação ser retomada.' : ''}` });
+      setAction(null); setRefresh(v => v + 1);
     } catch (error) {
-      setNotice(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível registrar a revisão.",
-      );
-    }
+      setActionError(error instanceof Error ? error.message : "Não foi possível concluir a ação.");
+    } finally { pendingRef.current = false; setPending(false); }
   };
 
-  const handleRunNow = async () => {
-    setTriggeringRun(true);
-    try {
-      await sendCommand("/api/scheduler", { action: "run-now" });
-      setTimeout(fetchData, 2000);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Erro de conexão.");
-    } finally {
-      setTriggeringRun(false);
-    }
-  };
-
-  const handlePublish = async (reelId: number) => {
-    try {
-      await sendCommand("/api/publish", {
-        reelId,
-        targets: ["instagram", "facebook"],
-      });
-      setTimeout(fetchData, 2000);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Erro de conexão.");
-    }
-  };
-
-  const handleReprocess = async (reelId: number) => {
-    try {
-      await sendCommand("/api/reels/reprocess", { reelId });
-      setTimeout(fetchData, 1000);
-    } catch (error) {
-      setNotice(
-        error instanceof Error ? error.message : "Erro ao reprocessar.",
-      );
-    }
-  };
-
-  const handleReprocessAllFailed = async () => {
-    setReprocessingAll(true);
-    try {
-      await sendCommand("/api/reels/reprocess", { allFailed: true });
-      setTimeout(fetchData, 1500);
-    } catch (error) {
-      setNotice(
-        error instanceof Error ? error.message : "Erro ao reprocessar.",
-      );
-    } finally {
-      setReprocessingAll(false);
-    }
-  };
-
-  const handleDelete = async (reelId: number) => {
-    try {
-      setReels((prev) => prev.filter((r) => r.id !== reelId));
-      const res = await fetch(`/api/reels?id=${reelId}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Erro ao excluir Reel.");
-      fetchData();
-    } catch (error) {
-      setNotice(
-        error instanceof Error ? error.message : "Erro ao excluir Reel.",
-      );
-      fetchData();
-    }
-  };
-
-  const filteredReels = reels.filter((r) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      r.caption?.toLowerCase().includes(q) ||
-      r.source_username?.toLowerCase().includes(q) ||
-      r.original_caption?.toLowerCase().includes(q)
-    );
-  });
-
-  const recentPublished = reels
-    .filter((r) => r.stage === "published" && r.published_at)
-    .sort((a, b) => (b.published_at || "").localeCompare(a.published_at || ""))
-    .slice(0, 5);
-
-  const nextInQueue =
-    reels.find((r) => r.stage === "uploaded") ||
-    reels.find((r) => r.stage === "discovered");
-  const errorsToday = stats?.errors_today || 0;
-
-  const today = new Date().toLocaleDateString("pt-BR", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  });
-
-  const statusPill = schedulerStatus?.is_running
-    ? `Rodando agora${schedulerStatus.current_task ? ` · ${schedulerStatus.current_task}` : ""}`
-    : schedulerStatus?.scheduler_active
-      ? `Automação ativa${schedulerStatus.next_run_at ? ` · próximo ciclo ${timeUntil(schedulerStatus.next_run_at)}` : ""}`
-      : schedulerStatus?.worker_online
-        ? "Automação pausada"
-        : "Worker offline";
+  const firstName = user.name.split(' ')[0];
+  const activeJobs = scheduler?.jobs?.filter(job => JOB_STATUSES[job.status]) || [];
+  const actionTitles = { publish: "Publicar vídeo", process: "Processar vídeo", delete: "Excluir vídeo", run: "Executar ciclo agora", "retry-all": "Reprocessar falhas", "review-published": "Confirmar post existente", "review-retry": "Autorizar nova tentativa" };
+  const statusLabel = !scheduler ? "Verificando automação" : !scheduler.worker_online ? "Worker offline" : scheduler.paused ? "Automação pausada" : scheduler.is_running ? "Automação em execução" : "Automação ativa";
+  const clearFilters = () => { setSearch(""); setQuery(""); setFilter("all"); setPage(1); };
 
   return (
     <AppShell user={user}>
-      <PageHeader
-        title="Painel"
-        subtitle={
-          <span
-            suppressHydrationWarning
-            className="first-letter:uppercase inline-block"
-          >
-            {today}
-          </span>
-        }
-        actions={
-          <>
-            {schedulerStatus && (
-              <span className="hidden xl:inline-flex h-10 items-center gap-2 px-3.5 rounded-full border border-line bg-surface text-ink-2">
-                <span
-                  className={`dot ${schedulerStatus.scheduler_active || schedulerStatus.is_running ? "bg-ok" : "bg-faint"}`}
-                />
-                <span suppressHydrationWarning>{statusPill}</span>
-              </span>
-            )}
-            {errorsToday > 0 && (
-              <button
-                type="button"
-                onClick={handleReprocessAllFailed}
-                disabled={reprocessingAll}
-                className="btn btn-secondary"
-                aria-label="Reprocessar falhas"
-              >
-                {reprocessingAll ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <RefreshCw />
-                )}
-                <span className="hidden sm:inline">Reprocessar falhas</span>
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowAddModal(true)}
-              className="btn btn-secondary"
-              aria-label="Adicionar reel"
-            >
-              <Plus />
-              <span className="hidden sm:inline">Adicionar reel</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleRunNow}
-              disabled={triggeringRun}
-              className="btn btn-primary"
-            >
-              {triggeringRun ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <polygon points="7 4 20 12 7 20 7 4" />
-                </svg>
-              )}
-              Rodar agora
-            </button>
-          </>
-        }
-      />
+      <div className="dashboard-topline"><span><span className="text-accent font-semibold">Workspace</span><span className="mx-2 text-faint">/</span>Visão geral</span><span className="hidden sm:inline-flex items-center gap-2"><ShieldCheck size={14} />Seu espaço de criação</span></div>
+      <header className="dashboard-heading">
+        <div><p className="dashboard-eyebrow">BOM TER VOCÊ AQUI, {firstName.toLocaleUpperCase('pt-BR')}</p><h1>Seu conteúdo, em movimento<span className="text-accent">.</span></h1><p>Organize seus vídeos. Acompanhe cada etapa. Publique com a sua marca.</p></div>
+        <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}><Plus />Adicionar vídeo</button>
+      </header>
 
-      {notice && (
-        <div role="status" className="card p-4 text-sm">
-          {notice}
-        </div>
-      )}
-      {schedulerStatus && !schedulerStatus.worker_online && (
-        <div role="alert" className="card p-4 border-accent/40">
-          A automação está offline. As tarefas ficam salvas até o serviço ser
-          iniciado na VPS.
-        </div>
-      )}
-      {schedulerStatus?.schedule_error && (
-        <div role="alert" className="card p-4">
-          {schedulerStatus.schedule_error}
-        </div>
-      )}
-      {!!schedulerStatus?.jobs?.filter((j) =>
-        ["blocked", "needs_review", "failed", "retry_wait", "running"].includes(
-          j.status,
-        ),
-      ).length && (
-        <section
-          className="card p-4 space-y-3"
-          aria-label="Atividade da automação"
-        >
-          <h2 className="font-semibold">Atividade da automação</h2>
-          {schedulerStatus.jobs
-            .filter((j) =>
-              [
-                "blocked",
-                "needs_review",
-                "failed",
-                "retry_wait",
-                "running",
-              ].includes(j.status),
-            )
-            .slice(0, 10)
-            .map((j) => (
-              <div key={j.id} className="border-t border-line pt-2 text-sm">
-                <span className="font-medium">
-                  {{
-                    discover: "Coleta",
-                    collect: "Resultado da coleta",
-                    prepare: "Preparação",
-                    publish: "Publicação",
-                  }[j.kind] || j.kind}{" "}
-                  #{j.ref_id}
-                  {j.target ? ` · ${j.target}` : ""}
-                </span>
-                <span className="text-muted">
-                  {" "}
-                  ·{" "}
-                  {{
-                    blocked: "Ação necessária",
-                    needs_review: "Revisão necessária",
-                    failed: "Falhou",
-                    retry_wait: "Aguardando nova tentativa",
-                    running: "Executando",
-                  }[j.status] || j.status}{" "}
-                  · {j.attempts} tentativa(s)
-                </span>
-                {j.error_message && (
-                  <p className="mt-1 text-muted">{j.error_message}</p>
-                )}
-                {j.status === "needs_review" && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <span className="text-muted w-full">
-                      Confira o resultado no provedor antes de autorizar outra
-                      tentativa.
-                    </span>
-                    {j.kind === "publish" && (
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => handleReview(j.id, true)}
-                      >
-                        Confirmar post existente
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleReview(j.id, false)}
-                    >
-                      Confirmei que não houve envio
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-        </section>
-      )}
+      {notice && <div className={`alert ${notice.error ? 'alert-err' : 'alert-ok'} dashboard-notice`} role={notice.error ? 'alert' : 'status'}><CheckCircle2 /><span>{notice.text}</span><button type="button" onClick={() => setNotice(null)} aria-label="Fechar aviso" className="btn btn-icon ml-auto"><X /></button></div>}
+      {loadError && <div className="alert alert-err flex-wrap" role="alert"><TriangleAlert /><span className="flex-1">{loadError} {updatedAt && 'Os dados exibidos são da última atualização.'}</span>{loadError.includes('sessão') ? <Link href="/" className="btn btn-secondary btn-sm">Entrar novamente</Link> : <button className="btn btn-secondary btn-sm" onClick={() => setRefresh(v=>v+1)} disabled={refreshing}>Tentar novamente</button>}</div>}
 
-      {user.plan === "free" && stats && stats.published_total >= 1 && (
-        <div className="card p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 border-accent/40">
-          <div className="flex flex-col gap-1">
-            <span className="font-semibold">
-              Você usou a publicação do plano grátis
-            </span>
-            <span className="text-[13px] text-muted">
-              Para continuar publicando no automático, com várias fontes, assine
-              o plano Pro.
-            </span>
-          </div>
-          <Link href="/#planos" className="btn btn-primary shrink-0">
-            Conhecer o Pro
-          </Link>
-        </div>
-      )}
-
-      <section
-        aria-label="Resumo do dia"
-        className="grid grid-cols-2 lg:grid-cols-4 gap-4"
-      >
-        <StatCard
-          label="Publicados hoje"
-          value={stats?.published_today ?? 0}
-          caption={`${stats?.published_total ?? 0} no total`}
-        />
-        <StatCard
-          label="Na fila"
-          value={stats?.pipeline_queue ?? 0}
-          caption="Aguardando processamento ou publicação"
-        />
-        <StatCard
-          label="Erros hoje"
-          value={errorsToday}
-          tone="error"
-          caption={
-            errorsToday > 0 ? (
-              <button
-                type="button"
-                className="py-2.5 -my-2.5 px-0 border-0 bg-transparent text-err-ink cursor-pointer text-xs underline-offset-2 hover:underline"
-                onClick={() => setStageFilter("error")}
-              >
-                Ver na fila
-              </button>
-            ) : (
-              "Nenhum erro"
-            )
-          }
-        />
-        <StatCard
-          label="Fontes ativas"
-          value={stats?.active_sources ?? 0}
-          caption={`de ${stats?.total_sources ?? 0} cadastradas`}
-        />
+      <section className="dashboard-stats" aria-label="Resumo do dia">
+        <StatCard label="Publicados hoje" value={stats?.published_today ?? '—'} caption={`${stats?.published_total ?? '—'} vídeos publicados no total`} icon={Send} />
+        <StatCard label="Na fila" value={stats?.pipeline_queue ?? '—'} caption="Do primeiro passo ao próximo post" icon={Layers3} />
+        <StatCard label="Fontes ativas" value={stats?.active_sources ?? '—'} caption={`${stats?.total_sources ?? '—'} perfis na sua curadoria`} icon={Users} />
+        <StatCard label="Erros hoje" value={stats?.errors_today ?? '—'} tone="error" caption={stats?.errors_today ? <button type="button" className="text-err-ink underline underline-offset-4" onClick={()=>{setFilter('error');setPage(1);}}>Conferir vídeos com erro</button> : stats ? 'Tudo certo por aqui' : 'Carregando resumo'} icon={TriangleAlert} />
       </section>
 
-      <section
-        aria-label="Etapas do pipeline"
-        className="card px-6 py-5 flex flex-col gap-4"
-      >
-        <div className="flex items-baseline justify-between">
-          <h2 className="section-title">Pipeline agora</h2>
-          <span className="text-xs text-faint">Reels em cada etapa</span>
+      <section className="automation-bar" aria-label="Status da automação">
+        <div className="automation-identity"><span className="automation-symbol"><Activity size={20} /></span><div><span className="font-semibold flex items-center gap-2"><span className={`dot ${scheduler?.scheduler_active ? 'bg-ok' : 'bg-warn'}`} />{statusLabel}</span><p>{scheduler?.current_task || (scheduler?.paused ? 'Suas tarefas ficam salvas até a automação ser retomada.' : !scheduler?.worker_online ? 'As tarefas aguardam a conexão com o worker.' : 'Seu conteúdo segue o ritmo que você configurou.')}</p></div></div>
+        <div className="automation-next"><Clock3 size={17} /><span>Próximo ciclo <strong>{scheduler?.next_run_at ? clockTime(scheduler.next_run_at) : '—'}</strong></span></div>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={()=>openAction({kind:'run'})} disabled={pending || !scheduler}><PlayIcon />Rodar agora</button>
+        <Link href="/dashboard/settings#automacao" className="automation-settings" aria-label="Configurar automação"><ArrowUpRight size={19} /></Link>
+      </section>
+      {scheduler?.schedule_error && <div role="alert" className="alert alert-warn"><TriangleAlert /><span>{scheduler.schedule_error} <Link href="/dashboard/settings#automacao" className="underline">Revisar configurações</Link></span></div>}
+
+      <section className="video-library" aria-labelledby="library-title">
+        <div className="library-heading"><div><div className="flex items-center gap-2.5"><h2 id="library-title">Biblioteca de vídeos</h2><span className="library-count">{stats?.total_reels ?? '—'}</span></div><p>Da inspiração à publicação, tudo em um só lugar.</p></div><div className="flex items-center gap-2">{countStages(['error']) > 0 && <button type="button" className="btn btn-ghost btn-sm" onClick={()=>openAction({kind:'retry-all'})} disabled={pending}><RefreshCw />Reprocessar falhas</button>}<button type="button" className="btn btn-secondary btn-icon" disabled={refreshing} onClick={()=>setRefresh(v=>v+1)} aria-label="Atualizar lista"><RefreshCw className={refreshing ? 'animate-spin' : ''} /></button></div></div>
+        <div className="library-toolbar">
+          <div className="library-tabs" role="group" aria-label="Filtrar por etapa">{FILTERS.map(item=><button key={item.value} type="button" aria-pressed={filter===item.value} onClick={()=>{setFilter(item.value);setPage(1);}}>{item.label}<span>{stats ? item.value==='all' ? stats.total_reels : countStages(item.stages) : '—'}</span></button>)}</div>
+          <div className="library-search"><Search size={17} aria-hidden="true" /><input type="search" placeholder="Buscar vídeos ou @perfil" aria-label="Buscar vídeos" value={search} onChange={e=>setSearch(e.target.value)} /></div>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          {PIPELINE_STEPS.map((step) => {
-            const count = reels.filter((r) =>
-              step.stages.includes(r.stage),
-            ).length;
-            return (
-              <div key={step.label} className="flex flex-col gap-2.5">
-                <div
-                  className={`h-1 rounded ${count > 0 ? (step.final ? "bg-accent" : "bg-info") : "bg-line-strong"}`}
-                />
-                <div className="flex justify-between gap-2">
-                  <span className="text-ink-2">{step.label}</span>
-                  <span
-                    className={`font-mono tabular ${count > 0 ? "" : "text-faint"}`}
-                  >
-                    {count}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+        <div aria-busy={loading}>
+          {loading ? <div className="video-grid" aria-label="Carregando vídeos">{Array.from({length:4},(_,i)=><div key={i} className="video-skeleton"><div /><span /><span /></div>)}<span className="sr-only" role="status">Carregando vídeos...</span></div> : loadError && !updatedAt ? <div className="library-empty"><TriangleAlert /><h3>Não foi possível carregar seus vídeos</h3><p>Confira sua conexão e tente novamente.</p></div> : listing.reels.length === 0 ? <div className="library-empty"><span className="empty-symbol"><Film size={30} /></span><h3>{query || filter!=='all' ? 'Nenhum vídeo encontrado' : 'Seu próximo vídeo começa aqui'}</h3><p>{query || filter!=='all' ? 'Tente outra busca ou escolha uma etapa diferente.' : 'Adicione um link ou conecte suas fontes para dar vida à sua biblioteca.'}</p><div className="flex gap-3">{query || filter!=='all' ? <button type="button" className="btn btn-secondary" onClick={clearFilters}>Limpar filtros</button> : <><button type="button" className="btn btn-primary" onClick={()=>setAdding(true)}><Plus />Adicionar vídeo</button><Link href="/dashboard/sources" className="btn btn-secondary">Conectar fontes<ArrowRight /></Link></>}</div></div> : <ul className="video-grid" aria-label="Vídeos">{listing.reels.map(reel=><ReelCard key={reel.id} reel={reel} busy={pending} working={!!stats?.reel_activity?.[reel.id]?.running} canPublish={!stats?.reel_activity?.[reel.id]?.needs_review && !stats?.reel_activity?.[reel.id]?.running && (reel.stage==='uploaded' || ((reel.stage==='publishing' || reel.stage==='error') && !!reel.r2_url && !!(reel.ig_post_id || reel.fb_post_id) && availableTargets(reel).length>0))} onPublish={()=>openAction({kind:'publish',reel})} onReprocess={()=>openAction({kind:'process',reel})} onDelete={()=>openAction({kind:'delete',reel})} />)}</ul>}
         </div>
+        <footer className="library-footer"><span>{listing.total ? `${(listing.page-1)*12+1}–${Math.min(listing.page*12,listing.total)} de ${listing.total} vídeos` : '0 vídeos'}<span className="hidden md:inline">{updatedAt ? ` · Atualizado às ${clockTime(updatedAt)}` : ''}</span></span><div className="flex items-center gap-3"><span>Página {listing.page} de {Math.max(1,listing.totalPages)}</span><button type="button" className="btn btn-secondary btn-icon" aria-label="Página anterior" disabled={page<=1 || loading} onClick={()=>setPage(v=>v-1)}><ChevronLeft /></button><button type="button" className="btn btn-secondary btn-icon" aria-label="Próxima página" disabled={page>=listing.totalPages || loading} onClick={()=>setPage(v=>v+1)}><ChevronRight /></button></div></footer>
       </section>
 
-      <div className="flex flex-col xl:flex-row gap-4 items-start">
-        <section
-          id="fila"
-          aria-label="Fila de reels"
-          className="card w-full xl:flex-[2] min-w-0 flex flex-col"
-        >
-          <div className="px-5 py-4 flex flex-wrap items-center justify-between gap-3 border-b border-line">
-            <h2 className="section-title">Fila de reels</h2>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
-                <Search
-                  className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-faint"
-                  aria-hidden="true"
-                />
-                <input
-                  type="search"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Buscar legenda ou @perfil"
-                  aria-label="Buscar na fila"
-                  className="input h-10 pl-9 w-60"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={fetchData}
-                className="btn btn-icon"
-                aria-label="Atualizar lista"
-                title="Atualizar lista"
-              >
-                <RefreshCw />
-              </button>
-            </div>
-          </div>
-
-          <div className="px-5 py-3 border-b border-line overflow-x-auto">
-            <div
-              className="segmented"
-              role="group"
-              aria-label="Filtrar por etapa"
-            >
-              {STAGE_FILTERS.map((f) => (
-                <button
-                  key={f.value}
-                  type="button"
-                  aria-pressed={stageFilter === f.value}
-                  onClick={() => setStageFilter(f.value)}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="hidden md:grid grid-cols-[minmax(0,1fr)_128px_84px_auto] gap-x-4 px-5 py-2.5 text-xs text-faint border-b border-line">
-            <span>Reel</span>
-            <span>Etapa</span>
-            <span>Quando</span>
-            <span className="text-right">Ações</span>
-          </div>
-
-          {loading ? (
-            <div className="flex items-center justify-center gap-3 py-16 text-muted">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Carregando a fila...
-            </div>
-          ) : filteredReels.length === 0 ? (
-            <div className="flex flex-col items-center text-center gap-3 px-6 py-16">
-              <span className="font-semibold">Nenhum reel por aqui</span>
-              <span className="text-[13px] text-muted max-w-sm">
-                Cadastre perfis em{" "}
-                <strong className="text-ink-2">Fontes</strong> para a coleta
-                automática ou adicione um link manualmente.
-              </span>
-              <button
-                type="button"
-                onClick={() => setShowAddModal(true)}
-                className="btn btn-primary mt-2"
-              >
-                <Plus />
-                Adicionar reel
-              </button>
-            </div>
-          ) : (
-            <ul className="m-0 p-0 list-none">
-              {filteredReels.map((reel) => (
-                <ReelCard
-                  key={reel.id}
-                  reel={reel}
-                  onPublish={handlePublish}
-                  onReprocess={handleReprocess}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </ul>
-          )}
-
-          <div className="px-5 py-3 border-t border-line text-xs text-faint">
-            Mostrando {filteredReels.length} de {reels.length} reels
-          </div>
-        </section>
-
-        <div className="w-full xl:flex-1 min-w-0 flex flex-col gap-4">
-          <section
-            aria-label="Próximo ciclo"
-            className="card p-5 flex flex-col gap-3.5"
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="section-title">Próximo ciclo</h2>
-              <Clock
-                className="w-[18px] h-[18px] text-muted"
-                aria-hidden="true"
-              />
-            </div>
-            <span
-              className="font-mono text-[36px] leading-none tracking-tight"
-              suppressHydrationWarning
-            >
-              {schedulerStatus?.is_running
-                ? "Rodando"
-                : schedulerStatus?.next_run_at
-                  ? clockTime(schedulerStatus.next_run_at)
-                  : "—"}
-            </span>
-            <span className="text-[13px] text-muted" suppressHydrationWarning>
-              {schedulerStatus?.last_run_at
-                ? `Último ciclo ${timeAgo(schedulerStatus.last_run_at)}`
-                : "Nenhum ciclo rodou ainda"}
-            </span>
-            {nextInQueue && (
-              <div className="inset p-3.5 flex flex-col gap-1">
-                <span className="text-xs text-faint">Próximo da fila</span>
-                <span className="text-ink-2 line-clamp-2">
-                  {nextInQueue.caption ||
-                    nextInQueue.original_caption ||
-                    `Reel de @${nextInQueue.source_username}`}
-                </span>
-              </div>
-            )}
-          </section>
-
-          <section
-            aria-label="Últimas publicações"
-            className="card p-5 flex flex-col gap-3.5"
-          >
-            <h2 className="section-title">Últimas publicações</h2>
-            {recentPublished.length === 0 ? (
-              <span className="text-[13px] text-muted">
-                Nenhuma publicação entre os reels carregados.
-              </span>
-            ) : (
-              <ul className="m-0 p-0 list-none flex flex-col gap-3.5">
-                {recentPublished.map((r) => (
-                  <li key={r.id} className="flex gap-3">
-                    <span
-                      className="font-mono text-xs text-faint pt-0.5 shrink-0"
-                      suppressHydrationWarning
-                    >
-                      {clockTime(r.published_at)}
-                    </span>
-                    <span className="text-ink-2 leading-snug min-w-0">
-                      <span className="line-clamp-2">
-                        {r.caption || r.original_caption || "Sem legenda"}
-                      </span>
-                      <span className="text-xs text-faint">
-                        @{r.source_username}
-                      </span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
+      <section className="pipeline-strip" aria-label="Etapas do pipeline"><div className="pipeline-strip-title"><Layers3 size={17} /><span>Seu fluxo<br/><strong>em tempo real</strong></span></div>{PIPELINE.map(({label,icon:Icon,stages})=><div key={label} className="pipeline-step"><Icon size={17}/><span>{label}</span><strong>{stats ? countStages(stages) : '—'}</strong></div>)}</section>
+      <div className="dashboard-bottom">
+        <section className="card activity-panel" aria-label="Atividade da automação"><div className="section-heading"><h2><Activity size={18}/>Atividade da automação</h2><span className="chip">{activeJobs.length} tarefas recentes</span></div>{!activeJobs.length ? <div className="quiet-state"><CheckCircle2 /><div><strong>Espaço para novas ideias</strong><p>As tarefas em andamento e os avisos da fila aparecem aqui.</p></div></div> : <ul className="activity-list">{activeJobs.slice(0,showAllActivity ? activeJobs.length : 6).map(job=><li key={job.id}><div className={`activity-dot ${job.status==='running' ? 'is-running' : ''}`} /><div className="min-w-0 flex-1"><div className="flex justify-between gap-2 flex-wrap"><strong>{JOB_LABELS[job.kind] || job.kind} #{job.ref_id}{job.target ? ` · ${job.target==='instagram' ? 'Instagram' : 'Facebook'}` : ''}</strong><span className="text-xs text-muted">{JOB_STATUSES[job.status]}</span></div>{job.error_message && <p>{job.error_message}</p>}<span className="text-xs text-faint">{job.attempts} tentativa(s)</span>{job.status==='blocked' && <Link className="inline-flex items-center gap-1 text-accent text-xs ml-3" href="/dashboard/settings">Revisar configurações<ArrowUpRight size={12}/></Link>}{job.status==='needs_review' && <div className="flex flex-wrap gap-2 mt-3">{job.kind==='publish' && <button type="button" className="btn btn-secondary btn-sm" onClick={()=>openAction({kind:'review-published',job})} disabled={pending}>Confirmar post existente</button>}<button type="button" className="btn btn-secondary btn-sm" onClick={()=>openAction({kind:'review-retry',job})} disabled={pending}>Confirmei que não houve envio</button></div>}</div></li>)}</ul>}{activeJobs.length>6 && <button type="button" className="btn btn-ghost btn-sm mt-4 w-full" onClick={()=>setShowAllActivity(v=>!v)} aria-expanded={showAllActivity}>{showAllActivity ? "Recolher atividades" : `Ver todas as atividades (${activeJobs.length})`}</button>}</section>
+        <section className="card recent-panel" aria-label="Últimas publicações"><div className="section-heading"><h2><CheckCircle2 size={18}/>Últimas publicações</h2><span className="recent-live">Histórico</span></div>{!stats?.recent_published?.length ? <div className="quiet-state"><Film /><div><strong>A primeira de muitas</strong><p>Seus vídeos publicados aparecem aqui.</p></div></div> : <ul className="recent-list">{stats.recent_published.map(reel=><li key={reel.id}><span className="recent-icon"><Check size={16}/></span><a href={reel.instagram_url} target="_blank" rel="noopener noreferrer"><strong>{reel.caption || reel.original_caption || `Vídeo de @${reel.source_username}`}</strong><span>@{reel.source_username} · {timeAgo(reel.published_at)}</span></a><ArrowUpRight size={15} className="text-faint shrink-0"/></li>)}</ul>}{stats?.next_reel && <div className="next-reel"><Clock3 size={17}/><div><span>Próximo da fila</span><p>{stats.next_reel.caption || stats.next_reel.original_caption || `@${stats.next_reel.source_username}`}</p></div></div>}</section>
       </div>
+      <div className="dashboard-footnote"><BrandTiny />Criado para histórias que merecem ir mais longe.<span className="ml-auto hidden sm:inline">GO POST · Seu estúdio de conteúdo</span></div>
+      {user.plan==='free' && (stats?.published_total || 0)>=1 && <div className="card p-5 flex flex-wrap justify-between gap-3"><div><strong>Continue criando com o Pro</strong><p className="text-muted text-sm">Você já usou a publicação do plano grátis.</p></div><Link href="/#planos" className="btn btn-primary">Conhecer o Pro<ArrowUpRight /></Link></div>}
 
-      <AddReelModal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        onAdded={fetchData}
-      />
+      <AddReelModal isOpen={adding} onClose={()=>setAdding(false)} onAdded={()=>{setNotice({text:'Vídeo adicionado à biblioteca. Acompanhe o processamento pela fila.'});setRefresh(v=>v+1);}} />
+      {action && <Modal title={actionTitles[action.kind]} onClose={closeAction} disabled={pending}>
+        <div className="flex flex-col gap-5">
+          {'reel' in action && <div className="inset p-4 text-sm"><span className="text-xs text-muted">@{action.reel.source_username}</span><p className="mt-1 font-medium line-clamp-3">{action.reel.caption || action.reel.original_caption || 'Vídeo sem legenda'}</p></div>}
+          {action.kind==='publish' && <><p className="text-muted text-sm">Escolha os destinos habilitados. A publicação será registrada na fila; o resultado de cada rede aparece no painel.</p><div className="flex flex-col gap-3">{availableTargets(action.reel).map(target=><label key={target} className="target-option"><input type="checkbox" checked={targets.includes(target)} onChange={e=>setTargets(prev=>e.target.checked ? [...prev,target] : prev.filter(t=>t!==target))} disabled={pending}/><span>{TARGET_LABELS[target]}</span><span className="ml-auto text-xs text-muted">Habilitado</span></label>)}</div>{!availableTargets(action.reel).length && <div className="alert alert-warn">Nenhum destino pendente habilitado. <Link href="/dashboard/settings" className="underline">Conferir configurações</Link></div>}</>}
+          {(action.kind==='process' || action.kind==='retry-all' || action.kind==='run') && <div className="alert alert-warn"><TriangleAlert /><p>{action.kind==='run' ? 'Este ciclo pode coletar novos vídeos e processar os pendentes.' : 'O processamento pode baixar o vídeo, gerar uma legenda e preparar os arquivos.'} Esta ação também pode publicar nos destinos habilitados, mesmo com a publicação automática desligada, e consumir créditos dos provedores.</p></div>}
+          {action.kind==='delete' && <p className="text-muted text-sm">O vídeo e os arquivos locais que não estiverem em uso serão excluídos. Esta ação não remove posts já publicados nas redes sociais.</p>}
+          {action.kind==='review-published' && <><p className="text-muted text-sm">Confira o post na plataforma e informe o ID. Isso confirma o resultado sem reenviar o vídeo.</p><label className="label">ID do post<input className="input mt-2" value={postId} onChange={e=>setPostId(e.target.value)} disabled={pending} /></label></>}
+          {action.kind==='review-retry' && <div className="alert alert-warn"><TriangleAlert /><p>Confirme no provedor que não houve publicação nem coleta em andamento. Autorizar outra tentativa pode consumir créditos ou criar um novo post.</p></div>}
+          {(scheduler?.paused || !scheduler?.worker_online) && action.kind!=='delete' && <p className="text-sm text-muted"><Clock3 size={14} className="inline mr-1"/>A tarefa aguardará na fila até a automação ser retomada.</p>}
+          {actionError && <div role="alert" className="alert alert-err"><TriangleAlert /><span>{actionError}</span></div>}
+          <div className="flex justify-end gap-3 pt-2"><button type="button" className="btn btn-secondary" onClick={closeAction} disabled={pending}>Cancelar</button><button type="button" className={`btn ${action.kind==='delete'?'btn-danger':'btn-primary'}`} disabled={pending || (action.kind==='publish' && !targets.some(t=>availableTargets(action.reel).includes(t))) || (action.kind==='review-published' && !postId.trim())} onClick={submitAction}>{pending ? <Loader2 className="animate-spin"/> : action.kind==='publish' ? <Send/> : null}{pending ? 'Registrando...' : actionTitles[action.kind]}</button></div>
+        </div>
+      </Modal>}
     </AppShell>
   );
 }
+function PlayIcon() { return <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l12-7z"/></svg>; }
+function BrandTiny() { return <span className="w-4 h-4 rounded bg-accent/15 text-accent flex items-center justify-center"><PlayIcon/></span>; }
